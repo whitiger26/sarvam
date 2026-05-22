@@ -8,28 +8,32 @@ import {
   FileText,
   Settings,
   Upload,
-  Volume2,
-  VolumeX,
   Loader2,
   AlertTriangle,
-  CheckCircle2,
   Wrench,
   Sparkles,
+  ChevronLeft,
   ChevronRight,
   Trash2,
   Languages,
   BookOpen,
   Plus,
+  MessageSquare,
+  Square,
+  Check,
+  Pencil,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ArrowRight,
 } from "lucide-react";
 
 /* ============================================================
-   FONT LOADING
+   FONTS — Inter + JetBrains Mono. No Roboto, no Google Sans.
    ============================================================ */
 const FONT_LINK_ID = "bta-fonts";
 function ensureFonts() {
   if (typeof document === "undefined") return;
   if (document.getElementById(FONT_LINK_ID)) return;
-  // Preconnect for performance
   const pc1 = document.createElement("link");
   pc1.rel = "preconnect";
   pc1.href = "https://fonts.googleapis.com";
@@ -39,23 +43,20 @@ function ensureFonts() {
   pc2.href = "https://fonts.gstatic.com";
   pc2.crossOrigin = "anonymous";
   document.head.appendChild(pc2);
-  // Google Sans (display) + Google Sans Text (body) + Roboto Mono (mono)
   const link = document.createElement("link");
   link.id = FONT_LINK_ID;
   link.rel = "stylesheet";
   link.href =
-    "https://fonts.googleapis.com/css?family=Google+Sans:400,500,700|Google+Sans+Text:400,500,700|Roboto+Mono:400,500&display=swap";
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap";
   document.head.appendChild(link);
 }
 
 /* ============================================================
-   PRE-LOADED MANUAL CONTENT
-   These are paraphrased excerpts of the kind of troubleshooting
-   content that appears in motorcycle owner's & service manuals.
-   Users can upload their actual manual PDF to replace/extend this.
+   SEED MANUAL CONTENT
+   Paraphrased universal motorcycle troubleshooting content.
+   Replace/extend by uploading real manual PDFs.
    ============================================================ */
 const SEED_MANUAL_CHUNKS = [
-  // ---------- ROYAL ENFIELD CLASSIC 350 ----------
   {
     id: "re350-001",
     brand: "Royal Enfield Classic 350",
@@ -110,8 +111,6 @@ const SEED_MANUAL_CHUNKS = [
     text:
       "A spongy or soft brake lever feel indicates air in the hydraulic line and requires bleeding of the brake system. A hard but ineffective brake lever indicates worn brake pads, glazed pad surfaces, or contaminated discs (oil/grease on the disc rotor). Brake fluid (DOT 4) should be changed every 2 years regardless of condition; absorbed moisture lowers the boiling point and causes brake fade. If the front brake lever travels all the way to the grip, stop riding immediately and have the system inspected. Riding with compromised brakes is extremely dangerous.",
   },
-
-  // ---------- TVS APACHE RTR 160 / 200 ----------
   {
     id: "tvs160-001",
     brand: "TVS Apache RTR 160 4V",
@@ -148,8 +147,6 @@ const SEED_MANUAL_CHUNKS = [
     text:
       "A sudden drop in fuel economy with no other symptoms may be caused by: (1) clogged air filter — clean or replace; (2) tyre pressure below specification — check and inflate to 25 PSI front, 32 PSI rear (single rider); (3) chain too tight or under-lubricated causing parasitic drag; (4) brake calliper drag from a seized piston; (5) faulty O2 sensor causing the ECU to enrich the mixture. Gradual fuel economy decline over months is usually deposit build-up — use a fuel system cleaner additive at 5000 km intervals.",
   },
-
-  // ---------- BAJAJ PULSAR ----------
   {
     id: "pulsar-001",
     brand: "Bajaj Pulsar 150",
@@ -195,8 +192,6 @@ const SEED_MANUAL_CHUNKS = [
     text:
       "If pressing the starter button produces no response: check that the side stand is up, clutch lever is pulled in, kill switch is in RUN. Listen for the starter relay click. No click and no crank: faulty starter relay, blown main fuse (15A under the seat), discharged battery, or broken kill-switch wiring. Click but no crank: battery too weak to turn the starter motor, corroded battery terminals, or seized starter motor. A faint click with dim lights confirms battery discharge — jump-start from another vehicle (12V system) following correct polarity, or use a battery charger.",
   },
-
-  // ---------- GENERAL / UNIVERSAL ----------
   {
     id: "gen-001",
     brand: "General Motorcycle Care",
@@ -247,7 +242,6 @@ class TfIdfIndex {
       for (const k in tf) tf[k] = tf[k] / len;
       return tf;
     });
-    // doc frequency
     const df = {};
     this.docTermFreqs.forEach(tf => {
       for (const term in tf) df[term] = (df[term] || 0) + 1;
@@ -255,7 +249,6 @@ class TfIdfIndex {
     const N = chunks.length;
     this.idf = {};
     for (const term in df) this.idf[term] = Math.log((N + 1) / (df[term] + 1)) + 1;
-    // pre-compute doc vectors norms
     this.docNorms = this.docTermFreqs.map(tf => {
       let s = 0;
       for (const t in tf) {
@@ -273,14 +266,12 @@ class TfIdfIndex {
     for (const t of qTokens) qtf[t] = (qtf[t] || 0) + 1;
     const qlen = qTokens.length;
     for (const t in qtf) qtf[t] = qtf[t] / qlen;
-    // q vector norm
     let qNorm = 0;
     for (const t in qtf) {
       const w = qtf[t] * (this.idf[t] || 0);
       qNorm += w * w;
     }
     qNorm = Math.sqrt(qNorm) || 1;
-    // score
     const scores = this.docTermFreqs.map((dtf, i) => {
       let dot = 0;
       for (const t in qtf) {
@@ -328,11 +319,9 @@ async function parsePdfToChunks(file, brand = "Uploaded Manual") {
     const content = await page.getTextContent();
     const pageText = content.items.map(it => it.str).join(" ").replace(/\s+/g, " ").trim();
     if (!pageText) continue;
-    // try to detect section headers (heuristic: short ALL CAPS or "Section X.X" lines)
     const sectionMatch = pageText.match(/(Section\s+\d+(?:\.\d+)?[^.]*\.)/i);
     if (sectionMatch) currentSection = sectionMatch[1].slice(0, 80);
     buffer += " " + pageText;
-    // flush every ~800 chars or at end
     while (buffer.length > 900) {
       const cut = buffer.lastIndexOf(". ", 900);
       const splitAt = cut > 400 ? cut + 1 : 900;
@@ -365,7 +354,7 @@ async function parsePdfToChunks(file, brand = "Uploaded Manual") {
 }
 
 /* ============================================================
-   SARVAM API CLIENT
+   SARVAM API
    ============================================================ */
 const SARVAM_BASE = "https://api.sarvam.ai";
 
@@ -381,7 +370,7 @@ async function sarvamSpeechToText({ audioBlob, apiKey, languageCode = "unknown" 
   });
   if (!res.ok) {
     const txt = await res.text();
-    throw new Error(`Sarvam ASR failed: ${res.status} ${txt}`);
+    throw new Error(`ASR ${res.status}: ${txt.slice(0, 200)}`);
   }
   const data = await res.json();
   return {
@@ -407,7 +396,7 @@ async function sarvamTranslate({ text, apiKey, sourceLang, targetLang }) {
       enable_preprocessing: true,
     }),
   });
-  if (!res.ok) throw new Error(`Sarvam translate failed: ${res.status}`);
+  if (!res.ok) throw new Error(`Translate ${res.status}`);
   const data = await res.json();
   return data.translated_text || text;
 }
@@ -429,7 +418,7 @@ async function sarvamTextToSpeech({ text, apiKey, targetLang = "en-IN", speaker 
       loudness: 1.0,
     }),
   });
-  if (!res.ok) throw new Error(`Sarvam TTS failed: ${res.status}`);
+  if (!res.ok) throw new Error(`TTS ${res.status}`);
   const data = await res.json();
   const audioB64 = data.audios?.[0];
   if (!audioB64) throw new Error("No audio returned");
@@ -437,7 +426,7 @@ async function sarvamTextToSpeech({ text, apiKey, targetLang = "en-IN", speaker 
 }
 
 /* ============================================================
-   ANTHROPIC LLM CLIENT
+   CLAUDE
    ============================================================ */
 async function callClaude({ system, userText, imageBase64, imageMime }) {
   const userContent = [];
@@ -460,21 +449,21 @@ async function callClaude({ system, userText, imageBase64, imageMime }) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 1024,
+      max_tokens: 1200,
       system,
       messages: [{ role: "user", content: userContent }],
     }),
   });
   if (!res.ok) {
     const t = await res.text();
-    throw new Error(`Claude API failed: ${res.status} ${t}`);
+    throw new Error(`Claude ${res.status}: ${t.slice(0, 200)}`);
   }
   const data = await res.json();
   return data.content.map(c => (c.type === "text" ? c.text : "")).join("").trim();
 }
 
 /* ============================================================
-   PROMPT CONSTRUCTION
+   PROMPTS
    ============================================================ */
 const REFUSAL_PHRASE =
   "I couldn't find this in the loaded manual sections. Please consult your authorized service center or upload additional manual pages covering this topic.";
@@ -497,7 +486,10 @@ function buildSystemPrompt() {
 
 7. Never invent part numbers, torque values, or specifications. Use only values present in the excerpts.
 
-Format your reply as plain text with [N] citation markers inline. Do not add a "Sources:" section — the UI renders citations separately.`;
+8. AFTER your answer, on a new line, write exactly: ===FOLLOWUPS===
+Then output 3 short follow-up questions a user might naturally ask next (one per line, no bullets/numbering, max 9 words each). Make them specific and grounded in the excerpts. If you used the refusal phrase, do NOT output the FOLLOWUPS section.
+
+Format the answer as plain text with [N] citation markers inline. Do not add a "Sources:" section — the UI renders citations separately.`;
 }
 
 function buildUserMessage({ question, retrieved }) {
@@ -510,18 +502,63 @@ function buildUserMessage({ question, retrieved }) {
   return `MANUAL EXCERPTS:\n\n${excerpts}\n\n---\n\nUSER QUESTION: ${question}`;
 }
 
+function parseAnswerAndFollowups(raw) {
+  const idx = raw.indexOf("===FOLLOWUPS===");
+  if (idx === -1) return { answer: raw.trim(), followups: [] };
+  const answer = raw.slice(0, idx).trim();
+  const tail = raw.slice(idx + "===FOLLOWUPS===".length);
+  const followups = tail
+    .split("\n")
+    .map(l => l.replace(/^[\s•\-\*\d.\)]+/, "").trim())
+    .filter(l => l.length > 0 && l.length < 120)
+    .slice(0, 3);
+  return { answer, followups };
+}
+
 /* ============================================================
-   AUDIO RECORDING HOOK
+   AUDIO RECORDER HOOK (with live level meter)
    ============================================================ */
 function useAudioRecorder() {
   const [isRecording, setIsRecording] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const rafRef = useRef(null);
+
+  const cleanup = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    setAudioLevel(0);
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      audioContextRef.current.close().catch(() => {});
+    }
+    audioContextRef.current = null;
+  };
 
   const start = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AC();
+    audioContextRef.current = ctx;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    const source = ctx.createMediaStreamSource(stream);
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((s, v) => s + v, 0) / data.length;
+      setAudioLevel(Math.min(1, (avg / 255) * 1.6));
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    tick();
+
     const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
       ? "audio/webm;codecs=opus"
       : "audio/webm";
@@ -538,38 +575,248 @@ function useAudioRecorder() {
   const stop = () =>
     new Promise(resolve => {
       const mr = mediaRecorderRef.current;
-      if (!mr) return resolve(null);
+      if (!mr) {
+        cleanup();
+        setIsRecording(false);
+        return resolve(null);
+      }
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: mr.mimeType });
-        streamRef.current?.getTracks().forEach(t => t.stop());
+        cleanup();
         setIsRecording(false);
         resolve(blob);
       };
       mr.stop();
     });
 
-  return { isRecording, start, stop };
+  const cancel = () => {
+    const mr = mediaRecorderRef.current;
+    if (mr) {
+      mr.onstop = null;
+      try { mr.stop(); } catch {}
+    }
+    chunksRef.current = [];
+    cleanup();
+    setIsRecording(false);
+  };
+
+  return { isRecording, audioLevel, start, stop, cancel };
 }
 
 /* ============================================================
-   UI: SUB-COMPONENTS
+   UTILITY: CONVERSATION HELPERS
+   ============================================================ */
+const newConversation = () => ({
+  id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+  title: "New conversation",
+  messages: [],
+  createdAt: Date.now(),
+});
+
+const groupChunksByDocument = (chunks) => {
+  const map = new Map();
+  for (const c of chunks) {
+    const key = `${c.brand}__${c.source}`;
+    if (!map.has(key)) {
+      map.set(key, { brand: c.brand, source: c.source, chunks: [] });
+    }
+    map.get(key).chunks.push(c);
+  }
+  return Array.from(map.values());
+};
+
+/* ============================================================
+   SUB-COMPONENTS
    ============================================================ */
 
-function Brand() {
+function Logo({ collapsed }) {
   return (
     <div className="flex items-center gap-2.5">
-      <div className="relative w-8 h-8 rounded-md bg-[#1a1a1a] flex items-center justify-center">
-        <Wrench className="w-4 h-4 text-[#FAFAF7]" strokeWidth={2.25} />
+      <div className="relative w-8 h-8 rounded-lg bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] flex items-center justify-center shadow-sm shadow-blue-500/20">
+        <Wrench className="w-4 h-4 text-white" strokeWidth={2.5} />
       </div>
-      <div className="flex flex-col leading-none">
-        <div className="font-display text-[19px] text-[#1a1a1a] tracking-tight font-medium">
-          garageOS
+      {!collapsed && (
+        <div className="flex flex-col leading-none">
+          <div className="font-display text-[16px] font-bold text-[#0A1628] tracking-tight">
+            garageOS
+          </div>
+          <div className="text-[9px] font-mono uppercase tracking-[0.16em] text-[#5B6B85] mt-1">
+            Manual-grounded
+          </div>
         </div>
-        <div className="text-[9.5px] font-mono uppercase tracking-[0.18em] text-[#7a7a72] mt-1">
-          Manual-grounded diagnosis
-        </div>
-      </div>
+      )}
     </div>
+  );
+}
+
+function Sidebar({
+  collapsed,
+  onToggleCollapse,
+  conversations,
+  activeConversationId,
+  onSelectConversation,
+  onNewConversation,
+  onDeleteConversation,
+  documents,
+  onSelectDocument,
+  onUploadManual,
+  isUploading,
+  uploadError,
+  onOpenSettings,
+}) {
+  const fileInputRef = useRef(null);
+
+  return (
+    <aside
+      className={`bg-[#FAFBFD] border-r border-[#E2E8F0] flex flex-col transition-all duration-200 ease-out ${
+        collapsed ? "w-[56px]" : "w-[280px]"
+      }`}
+    >
+      {/* Logo & collapse */}
+      <div className={`flex items-center justify-between p-3 ${collapsed ? "px-2" : "px-4"}`}>
+        <Logo collapsed={collapsed} />
+        <button
+          onClick={onToggleCollapse}
+          className="text-[#5B6B85] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
+          title={collapsed ? "Expand" : "Collapse"}
+        >
+          {collapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {/* New chat */}
+      <div className={`${collapsed ? "px-2" : "px-3"} pt-1 pb-3`}>
+        <button
+          onClick={onNewConversation}
+          className={`w-full flex items-center ${collapsed ? "justify-center" : "justify-start gap-2"} bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-lg ${collapsed ? "h-9 w-9 mx-auto" : "px-3 py-2"} text-[13px] font-medium transition-colors shadow-sm shadow-blue-500/10`}
+        >
+          <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={2.5} />
+          {!collapsed && <span>New chat</span>}
+        </button>
+      </div>
+
+      {/* Conversations */}
+      {!collapsed && (
+        <div className="px-3 pb-2">
+          <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#94A3B8] px-1.5 mb-1.5">
+            Chats
+          </div>
+          <div className="space-y-0.5 max-h-[30vh] overflow-y-auto scrollbar-thin">
+            {conversations.length === 0 ? (
+              <div className="text-[11.5px] text-[#94A3B8] px-1.5 py-1">No chats yet</div>
+            ) : (
+              conversations.map(c => (
+                <div
+                  key={c.id}
+                  onClick={() => onSelectConversation(c.id)}
+                  className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-[12.5px] ${
+                    c.id === activeConversationId
+                      ? "bg-[#EFF6FF] text-[#1D4ED8] font-medium"
+                      : "text-[#0A1628]/80 hover:bg-[#EFF6FF]/60"
+                  }`}
+                >
+                  <MessageSquare className="w-3.5 h-3.5 flex-shrink-0 opacity-70" />
+                  <span className="truncate flex-1">{c.title}</span>
+                  {c.id === activeConversationId && conversations.length > 1 && (
+                    <button
+                      onClick={e => {
+                        e.stopPropagation();
+                        onDeleteConversation(c.id);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-[#5B6B85] hover:text-[#DC2626] transition-opacity"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className={`${collapsed ? "px-2" : "px-3"} mt-2 border-t border-[#E2E8F0] pt-3`}>
+        {!collapsed && (
+          <div className="flex items-center justify-between px-1.5 mb-2">
+            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#94A3B8]">
+              Manuals
+            </div>
+            <span className="text-[10px] font-mono text-[#94A3B8]">{documents.length}</span>
+          </div>
+        )}
+
+        {/* Upload — prominent dashed area */}
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isUploading}
+          className={`w-full ${collapsed ? "h-9 px-0 justify-center" : "px-3 py-2.5 justify-center"} flex items-center gap-2 border-2 border-dashed border-[#BFDBFE] hover:border-[#2563EB] bg-[#EFF6FF]/40 hover:bg-[#EFF6FF] text-[#2563EB] hover:text-[#1D4ED8] rounded-lg text-[12.5px] font-medium transition-colors disabled:opacity-50`}
+          title="Upload manual PDF"
+        >
+          {isUploading ? (
+            <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+          ) : (
+            <Upload className="w-4 h-4 flex-shrink-0" />
+          )}
+          {!collapsed && <span>{isUploading ? "Indexing..." : "Upload manual"}</span>}
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/pdf"
+          className="hidden"
+          onChange={e => {
+            const f = e.target.files?.[0];
+            if (f) onUploadManual(f);
+            e.target.value = "";
+          }}
+        />
+        {uploadError && !collapsed && (
+          <div className="text-[10.5px] text-[#DC2626] mt-2 font-mono leading-tight">
+            {uploadError}
+          </div>
+        )}
+      </div>
+
+      {/* Documents list */}
+      {!collapsed && (
+        <div className="px-3 mt-2 flex-1 overflow-y-auto scrollbar-thin pb-3">
+          <div className="space-y-0.5">
+            {documents.map((doc, i) => (
+              <button
+                key={i}
+                onClick={() => onSelectDocument(doc)}
+                className="w-full text-left group flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-[#EFF6FF] transition-colors"
+              >
+                <FileText className="w-3.5 h-3.5 mt-0.5 text-[#5B6B85] group-hover:text-[#2563EB] flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-[12px] font-medium text-[#0A1628] truncate leading-tight">
+                    {doc.brand}
+                  </div>
+                  <div className="text-[10.5px] text-[#5B6B85] mt-0.5 flex items-center gap-1.5">
+                    <span className="truncate">{doc.source}</span>
+                    <span className="font-mono text-[#94A3B8]">·</span>
+                    <span className="font-mono text-[10px] text-[#94A3B8] flex-shrink-0">
+                      {doc.chunks.length}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className={`mt-auto ${collapsed ? "px-2" : "px-3"} py-3 border-t border-[#E2E8F0]`}>
+        <button
+          onClick={onOpenSettings}
+          className={`w-full flex items-center ${collapsed ? "justify-center" : "gap-2 px-2"} py-1.5 text-[12.5px] text-[#5B6B85] hover:text-[#0A1628] hover:bg-[#EFF6FF] rounded-md transition-colors`}
+        >
+          <Settings className="w-4 h-4 flex-shrink-0" />
+          {!collapsed && <span>Settings</span>}
+        </button>
+      </div>
+    </aside>
   );
 }
 
@@ -577,52 +824,56 @@ function CitationPill({ n, chunk, onClick }) {
   return (
     <button
       onClick={onClick}
-      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-[#1a1a1a]/15 bg-[#FAFAF7] hover:bg-[#1a1a1a] hover:text-[#FAFAF7] hover:border-[#1a1a1a] transition-all text-[10.5px] font-mono"
+      className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-[#BFDBFE] bg-[#EFF6FF] hover:bg-[#2563EB] hover:text-white hover:border-[#2563EB] transition-all text-[10.5px] font-mono text-[#1D4ED8] mx-0.5 align-baseline"
       title={`${chunk.source} — ${chunk.section}`}
     >
-      <span className="font-medium">[{n}]</span>
-      <span className="opacity-70 max-w-[140px] truncate">{chunk.section}</span>
+      <span className="font-semibold">[{n}]</span>
+      <span className="opacity-80 max-w-[140px] truncate">{chunk.section}</span>
     </button>
   );
 }
 
-function CitationCard({ n, chunk }) {
+function CitationCard({ n, chunk, onClick }) {
   return (
-    <div className="border border-[#1a1a1a]/10 rounded-lg p-3.5 bg-white/50 hover:bg-white transition-colors">
+    <button
+      onClick={onClick}
+      className="text-left border border-[#E2E8F0] hover:border-[#2563EB] rounded-lg p-3.5 bg-white hover:shadow-md hover:shadow-blue-500/5 transition-all w-full"
+    >
       <div className="flex items-baseline justify-between gap-2 mb-1.5">
-        <div className="font-mono text-[10.5px] text-[#C8553D] font-medium">[{n}]</div>
-        <div className="font-mono text-[9.5px] text-[#7a7a72] uppercase tracking-wider">
+        <div className="font-mono text-[10.5px] text-[#2563EB] font-semibold">[{n}]</div>
+        <div className="font-mono text-[9.5px] text-[#94A3B8] uppercase tracking-wider">
           p.{chunk.page}
         </div>
       </div>
-      <div className="text-[12.5px] font-medium text-[#1a1a1a] mb-0.5 leading-snug">
+      <div className="text-[12.5px] font-semibold text-[#0A1628] mb-0.5 leading-snug">
         {chunk.brand}
       </div>
-      <div className="text-[11px] text-[#7a7a72] mb-2 font-mono">
+      <div className="text-[11px] text-[#5B6B85] mb-2 font-mono">
         {chunk.source} · {chunk.section}
       </div>
-      <div className="text-[12px] text-[#3a3a35] leading-relaxed line-clamp-4">
+      <div className="text-[12px] text-[#334155] leading-relaxed line-clamp-4">
         {chunk.text}
       </div>
-    </div>
+    </button>
   );
 }
 
-function MessageBubble({ msg, onCitationClick }) {
+function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
   if (msg.role === "user") {
     return (
-      <div className="flex justify-end mb-7">
-        <div className="max-w-[78%]">
+      <div className="flex justify-end mb-6">
+        <div className="max-w-[75%]">
           {msg.image && (
-            <div className="mb-2 rounded-lg overflow-hidden border border-[#1a1a1a]/10">
-              <img src={msg.image} alt="user upload" className="max-h-56 object-cover" />
+            <div className="mb-2 rounded-xl overflow-hidden border border-[#E2E8F0]">
+              <img src={msg.image} alt="upload" className="max-h-56 object-cover" />
             </div>
           )}
-          <div className="bg-[#1a1a1a] text-[#FAFAF7] rounded-2xl rounded-tr-md px-4 py-2.5 text-[14px] leading-relaxed">
+          <div className="bg-[#0A1628] text-white rounded-2xl rounded-tr-md px-4 py-2.5 text-[14px] leading-relaxed">
             {msg.text}
           </div>
-          {msg.detectedLang && msg.detectedLang !== "en-IN" && (
-            <div className="text-[10px] font-mono text-[#7a7a72] mt-1 text-right">
+          {msg.detectedLang && msg.detectedLang !== "en-IN" && msg.detectedLang !== "unknown" && (
+            <div className="text-[10px] font-mono text-[#94A3B8] mt-1 text-right flex items-center justify-end gap-1">
+              <Languages className="w-2.5 h-2.5" />
               voice · {msg.detectedLang}
             </div>
           )}
@@ -631,10 +882,8 @@ function MessageBubble({ msg, onCitationClick }) {
     );
   }
 
-  // assistant
   const renderText = (text, retrieved) => {
     if (!text) return null;
-    // split by [N] markers
     const parts = text.split(/(\[\d+\])/g);
     return parts.map((p, i) => {
       const m = p.match(/^\[(\d+)\]$/);
@@ -642,14 +891,7 @@ function MessageBubble({ msg, onCitationClick }) {
         const n = parseInt(m[1], 10);
         const chunk = retrieved?.[n - 1]?.chunk;
         if (chunk) {
-          return (
-            <CitationPill
-              key={i}
-              n={n}
-              chunk={chunk}
-              onClick={() => onCitationClick(n - 1)}
-            />
-          );
+          return <CitationPill key={i} n={n} chunk={chunk} onClick={() => onCitationClick(retrieved[n - 1].chunk)} />;
         }
       }
       return <span key={i}>{p}</span>;
@@ -657,48 +899,68 @@ function MessageBubble({ msg, onCitationClick }) {
   };
 
   return (
-    <div className="flex justify-start mb-7">
-      <div className="max-w-[88%] w-full">
-        <div className="flex items-center gap-2 mb-2">
-          <div className="w-5 h-5 rounded bg-[#1a1a1a] flex items-center justify-center">
-            <Sparkles className="w-2.5 h-2.5 text-[#FAFAF7]" />
+    <div className="flex justify-start mb-6">
+      <div className="max-w-[90%] w-full">
+        <div className="flex items-center gap-2 mb-2.5">
+          <div className="w-5 h-5 rounded-md bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] flex items-center justify-center">
+            <Sparkles className="w-2.5 h-2.5 text-white" strokeWidth={2.5} />
           </div>
-          <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-[#7a7a72]">
-            {msg.refused ? "Refused (out of scope)" : "Diagnosis"}
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-[#5B6B85]">
+            {msg.refused ? "Refused — out of scope" : "Diagnosis"}
           </div>
           {msg.confidence != null && !msg.refused && (
-            <div className="text-[10px] font-mono text-[#7a7a72]">
+            <div className="text-[10px] font-mono text-[#94A3B8]">
               · top match {(msg.confidence * 100).toFixed(0)}%
             </div>
           )}
         </div>
 
         {msg.refused ? (
-          <div className="bg-[#FFF8E7] border border-[#E8B84A]/40 rounded-xl p-4 flex gap-3 items-start">
-            <AlertTriangle className="w-4 h-4 text-[#B8881A] mt-0.5 flex-shrink-0" />
-            <div className="text-[13.5px] text-[#5a4a1a] leading-relaxed">
+          <div className="bg-[#FEF3C7] border border-[#FCD34D]/50 rounded-xl p-4 flex gap-3 items-start">
+            <AlertTriangle className="w-4 h-4 text-[#B45309] mt-0.5 flex-shrink-0" />
+            <div className="text-[13.5px] text-[#78350F] leading-relaxed">
               {msg.text}
             </div>
           </div>
         ) : (
-          <div className="text-[14.5px] leading-[1.65] text-[#1a1a1a] whitespace-pre-wrap [&_button]:mx-0.5">
+          <div className="text-[14.5px] leading-[1.65] text-[#0A1628] whitespace-pre-wrap">
             {renderText(msg.text, msg.retrieved)}
           </div>
         )}
 
         {msg.ttsUrl && (
-          <audio controls className="mt-3 h-8 w-full max-w-sm" src={msg.ttsUrl} />
+          <audio controls className="mt-3 h-9 w-full max-w-sm" src={msg.ttsUrl} />
         )}
 
         {msg.retrieved && msg.retrieved.length > 0 && !msg.refused && (
           <div className="mt-5">
-            <div className="text-[10px] font-mono uppercase tracking-[0.16em] text-[#7a7a72] mb-2.5 flex items-center gap-1.5">
+            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#5B6B85] mb-2.5 flex items-center gap-1.5">
               <BookOpen className="w-3 h-3" />
               Retrieved manual sections
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {msg.retrieved.map((r, i) => (
-                <CitationCard key={i} n={i + 1} chunk={r.chunk} />
+                <CitationCard key={i} n={i + 1} chunk={r.chunk} onClick={() => onCitationClick(r.chunk)} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {msg.followups && msg.followups.length > 0 && !msg.refused && (
+          <div className="mt-5">
+            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#5B6B85] mb-2.5">
+              Follow-ups
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {msg.followups.map((f, i) => (
+                <button
+                  key={i}
+                  onClick={() => onFollowupClick(f)}
+                  className="group inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] text-[#1D4ED8] bg-white border border-[#BFDBFE] rounded-full hover:bg-[#2563EB] hover:text-white hover:border-[#2563EB] transition-all"
+                >
+                  <span>{f}</span>
+                  <ArrowRight className="w-3 h-3 opacity-60 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+                </button>
               ))}
             </div>
           </div>
@@ -708,74 +970,74 @@ function MessageBubble({ msg, onCitationClick }) {
   );
 }
 
-function SettingsPanel({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setVoiceLang, ttsEnabled, setTtsEnabled }) {
+function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setVoiceLang, ttsEnabled, setTtsEnabled }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 bg-[#1a1a1a]/30 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-[#0A1628]/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-[#FAFAF7] border border-[#1a1a1a]/15 rounded-2xl max-w-md w-full p-6 shadow-2xl"
+        className="bg-white border border-[#E2E8F0] rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-blue-500/10"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex justify-between items-start mb-5">
           <div>
-            <div className="font-display text-[22px] text-[#1a1a1a] leading-none font-medium tracking-tight">Settings</div>
-            <div className="text-[11px] font-mono text-[#7a7a72] mt-1.5">Voice & language configuration</div>
+            <div className="font-display text-[20px] text-[#0A1628] font-bold tracking-tight leading-none">Settings</div>
+            <div className="text-[11px] font-mono text-[#5B6B85] mt-1.5">Voice & language configuration</div>
           </div>
-          <button onClick={onClose} className="text-[#7a7a72] hover:text-[#1a1a1a]">
+          <button onClick={onClose} className="text-[#5B6B85] hover:text-[#0A1628]">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         <div className="space-y-5">
           <div>
-            <label className="block text-[11px] font-mono uppercase tracking-wider text-[#3a3a35] mb-1.5">
+            <label className="block text-[11px] font-mono uppercase tracking-[0.12em] text-[#0A1628] mb-1.5 font-medium">
               Sarvam API Key
             </label>
             <input
               type="password"
               value={sarvamKey}
               onChange={e => setSarvamKey(e.target.value)}
-              placeholder="sk_..."
-              className="w-full px-3 py-2 text-[13px] font-mono bg-white border border-[#1a1a1a]/15 rounded-lg focus:outline-none focus:border-[#C8553D]"
+              placeholder="Paste your key..."
+              className="w-full px-3 py-2 text-[13px] font-mono bg-[#F4F7FC] border border-[#E2E8F0] rounded-lg focus:outline-none focus:border-[#2563EB] focus:bg-white transition-colors"
             />
-            <p className="text-[11px] text-[#7a7a72] mt-1.5 leading-relaxed">
-              Used for Indic ASR (Saarika), TTS (Bulbul), and translation. Without a key, voice input falls back to the browser's Web Speech API (English only). Get a key at sarvam.ai.
+            <p className="text-[11px] text-[#5B6B85] mt-1.5 leading-relaxed">
+              Used for Saarika ASR, Bulbul TTS, and Mayura translation. Required for voice input in Indian languages. Get one at <span className="font-mono text-[#1D4ED8]">sarvam.ai</span>.
             </p>
           </div>
 
           <div>
-            <label className="block text-[11px] font-mono uppercase tracking-wider text-[#3a3a35] mb-1.5">
+            <label className="block text-[11px] font-mono uppercase tracking-[0.12em] text-[#0A1628] mb-1.5 font-medium">
               Voice Input Language
             </label>
             <select
               value={voiceLang}
               onChange={e => setVoiceLang(e.target.value)}
-              className="w-full px-3 py-2 text-[13px] bg-white border border-[#1a1a1a]/15 rounded-lg focus:outline-none focus:border-[#C8553D]"
+              className="w-full px-3 py-2 text-[13px] bg-[#F4F7FC] border border-[#E2E8F0] rounded-lg focus:outline-none focus:border-[#2563EB] focus:bg-white"
             >
-              <option value="unknown">Auto-detect (Sarvam)</option>
+              <option value="unknown">Auto-detect</option>
               <option value="en-IN">English (India)</option>
-              <option value="hi-IN">हिन्दी (Hindi)</option>
-              <option value="ta-IN">தமிழ் (Tamil)</option>
-              <option value="te-IN">తెలుగు (Telugu)</option>
-              <option value="kn-IN">ಕನ್ನಡ (Kannada)</option>
-              <option value="ml-IN">മലയാളം (Malayalam)</option>
-              <option value="mr-IN">मराठी (Marathi)</option>
-              <option value="bn-IN">বাংলা (Bengali)</option>
-              <option value="gu-IN">ગુજરાતી (Gujarati)</option>
-              <option value="pa-IN">ਪੰਜਾਬੀ (Punjabi)</option>
+              <option value="hi-IN">हिन्दी — Hindi</option>
+              <option value="ta-IN">தமிழ் — Tamil</option>
+              <option value="te-IN">తెలుగు — Telugu</option>
+              <option value="kn-IN">ಕನ್ನಡ — Kannada</option>
+              <option value="ml-IN">മലയാളം — Malayalam</option>
+              <option value="mr-IN">मराठी — Marathi</option>
+              <option value="bn-IN">বাংলা — Bengali</option>
+              <option value="gu-IN">ગુજરાતી — Gujarati</option>
+              <option value="pa-IN">ਪੰਜਾਬੀ — Punjabi</option>
             </select>
           </div>
 
           <div className="flex items-center justify-between py-2">
             <div>
-              <div className="text-[13px] text-[#1a1a1a] font-medium">Speak responses aloud</div>
-              <div className="text-[11px] text-[#7a7a72]">Generates audio via Bulbul (requires key)</div>
+              <div className="text-[13px] text-[#0A1628] font-medium">Speak responses aloud</div>
+              <div className="text-[11px] text-[#5B6B85]">Generates audio via Bulbul (requires key)</div>
             </div>
             <button
               onClick={() => setTtsEnabled(!ttsEnabled)}
-              className={`w-10 h-5 rounded-full transition-colors relative ${ttsEnabled ? "bg-[#C8553D]" : "bg-[#1a1a1a]/15"}`}
+              className={`w-10 h-5 rounded-full transition-colors relative ${ttsEnabled ? "bg-[#2563EB]" : "bg-[#E2E8F0]"}`}
             >
-              <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${ttsEnabled ? "left-5" : "left-0.5"}`} />
+              <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow ${ttsEnabled ? "left-5" : "left-0.5"}`} />
             </button>
           </div>
         </div>
@@ -784,82 +1046,109 @@ function SettingsPanel({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
   );
 }
 
-function ManualLibrary({ chunks, uploadedChunks, onUpload, isUploading, uploadError }) {
-  const fileInputRef = useRef(null);
-  const allBrands = useMemo(() => {
-    const map = new Map();
-    chunks.forEach(c => {
-      const k = c.brand;
-      map.set(k, (map.get(k) || 0) + 1);
-    });
-    return Array.from(map.entries());
-  }, [chunks]);
-
+function DocumentPreviewModal({ doc, onClose, onSelectChunk }) {
+  if (!doc) return null;
   return (
-    <div className="px-4 py-3 border-b border-[#1a1a1a]/8 bg-[#F5F4EE]">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 overflow-x-auto">
-          <BookOpen className="w-3.5 h-3.5 text-[#7a7a72] flex-shrink-0" />
-          <span className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-[#7a7a72] flex-shrink-0">
-            Indexed
-          </span>
-          <div className="flex gap-1.5 overflow-x-auto">
-            {allBrands.map(([brand, count]) => (
-              <div
-                key={brand}
-                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-[#1a1a1a]/12 bg-white text-[11px] whitespace-nowrap"
-              >
-                <span className="text-[#1a1a1a]">{brand}</span>
-                <span className="font-mono text-[10px] text-[#7a7a72]">{count}</span>
+    <div className="fixed inset-0 z-50 bg-[#0A1628]/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white border border-[#E2E8F0] rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col shadow-2xl shadow-blue-500/10"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start p-6 border-b border-[#E2E8F0]">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-lg bg-[#EFF6FF] flex items-center justify-center flex-shrink-0">
+              <FileText className="w-5 h-5 text-[#2563EB]" />
+            </div>
+            <div>
+              <div className="font-display text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight">
+                {doc.brand}
               </div>
-            ))}
+              <div className="text-[12px] text-[#5B6B85] mt-0.5 font-mono">
+                {doc.source} · {doc.chunks.length} section{doc.chunks.length === 1 ? "" : "s"}
+              </div>
+            </div>
           </div>
+          <button onClick={onClose} className="text-[#5B6B85] hover:text-[#0A1628] p-1">
+            <X className="w-4 h-4" />
+          </button>
         </div>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isUploading}
-          className="flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-[#1a1a1a]/15 bg-white hover:bg-[#1a1a1a] hover:text-[#FAFAF7] text-[11px] transition-colors disabled:opacity-50"
-        >
-          {isUploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
-          {isUploading ? "Indexing..." : "Add manual PDF"}
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/pdf"
-          className="hidden"
-          onChange={e => {
-            const f = e.target.files?.[0];
-            if (f) onUpload(f);
-            e.target.value = "";
-          }}
-        />
+        <div className="flex-1 overflow-y-auto scrollbar-thin p-5 space-y-3">
+          {doc.chunks.map((chunk, i) => (
+            <button
+              key={chunk.id}
+              onClick={() => onSelectChunk(chunk)}
+              className="w-full text-left p-4 border border-[#E2E8F0] hover:border-[#2563EB] hover:bg-[#EFF6FF]/30 rounded-lg transition-all"
+            >
+              <div className="flex items-baseline justify-between gap-3 mb-1.5">
+                <div className="text-[13px] font-semibold text-[#0A1628]">
+                  {chunk.section}
+                </div>
+                <div className="font-mono text-[10px] text-[#94A3B8] uppercase tracking-wider flex-shrink-0">
+                  p.{chunk.page}
+                </div>
+              </div>
+              <div className="text-[12.5px] text-[#475569] leading-relaxed line-clamp-3">
+                {chunk.text}
+              </div>
+            </button>
+          ))}
+        </div>
       </div>
-      {uploadError && (
-        <div className="text-[11px] text-[#C8553D] mt-2 font-mono">{uploadError}</div>
-      )}
     </div>
   );
 }
 
-function SuggestionChips({ onPick }) {
-  const suggestions = [
-    "White smoke from my Royal Enfield's exhaust",
-    "Apache RTR engine light is on, what does it mean?",
-    "Pulsar 150 won't start in the morning",
-    "Chain slack — what's the correct adjustment?",
-  ];
+function ChunkPreviewModal({ chunk, onClose }) {
+  if (!chunk) return null;
   return (
-    <div className="flex flex-wrap gap-2 justify-center">
-      {suggestions.map(s => (
-        <button
-          key={s}
-          onClick={() => onPick(s)}
-          className="px-3 py-1.5 text-[12.5px] text-[#3a3a35] bg-white border border-[#1a1a1a]/12 rounded-full hover:border-[#1a1a1a] hover:bg-[#1a1a1a] hover:text-[#FAFAF7] transition-all"
-        >
-          {s}
-        </button>
-      ))}
+    <div className="fixed inset-0 z-[60] bg-[#0A1628]/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white border border-[#E2E8F0] rounded-2xl max-w-lg w-full p-6 shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <div className="font-display text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight">
+              {chunk.brand}
+            </div>
+            <div className="text-[11px] font-mono text-[#5B6B85] mt-1">
+              {chunk.source} · {chunk.section} · p.{chunk.page}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-[#5B6B85] hover:text-[#0A1628]">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="text-[13.5px] text-[#0A1628] leading-relaxed whitespace-pre-wrap max-h-[60vh] overflow-y-auto scrollbar-thin">
+          {chunk.text}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AudioLevelMeter({ level }) {
+  const bars = 14;
+  return (
+    <div className="flex items-center gap-[3px] h-7">
+      {Array.from({ length: bars }).map((_, i) => {
+        // wave-like distribution centered around middle
+        const center = bars / 2;
+        const distance = Math.abs(i - center) / center;
+        const falloff = 1 - distance * 0.5;
+        const base = 0.2;
+        const height = base + level * falloff * 0.8 + (Math.sin(Date.now() / 100 + i) + 1) * 0.05 * level;
+        return (
+          <div
+            key={i}
+            style={{
+              height: `${Math.min(100, Math.max(15, height * 100))}%`,
+              transition: "height 80ms ease-out",
+            }}
+            className="w-[3px] rounded-full bg-gradient-to-t from-[#2563EB] to-[#60A5FA]"
+          />
+        );
+      })}
     </div>
   );
 }
@@ -870,10 +1159,39 @@ function SuggestionChips({ onPick }) {
 export default function App() {
   ensureFonts();
 
+  // Chunks (manuals)
   const [chunks, setChunks] = useState(SEED_MANUAL_CHUNKS);
-  const [messages, setMessages] = useState([]);
+  const documents = useMemo(() => groupChunksByDocument(chunks), [chunks]);
+  const index = useMemo(() => new TfIdfIndex(chunks), [chunks]);
+
+  // Conversations
+  const [conversations, setConversations] = useState(() => [newConversation()]);
+  const [activeConversationId, setActiveConversationId] = useState(conversations[0].id);
+  const activeConversation = conversations.find(c => c.id === activeConversationId) || conversations[0];
+  const messages = activeConversation?.messages || [];
+
+  const setMessages = useCallback(
+    updater => {
+      setConversations(prev =>
+        prev.map(c => {
+          if (c.id !== activeConversationId) return c;
+          const next = typeof updater === "function" ? updater(c.messages) : updater;
+          // auto-title from first user message
+          let title = c.title;
+          if (c.title === "New conversation") {
+            const firstUser = next.find(m => m.role === "user");
+            if (firstUser?.text) title = firstUser.text.slice(0, 40) + (firstUser.text.length > 40 ? "…" : "");
+          }
+          return { ...c, messages: next, title };
+        })
+      );
+    },
+    [activeConversationId]
+  );
+
+  // UI state
   const [input, setInput] = useState("");
-  const [pendingImage, setPendingImage] = useState(null); // {dataUrl, base64, mime}
+  const [pendingImage, setPendingImage] = useState(null);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingStage, setThinkingStage] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -882,26 +1200,28 @@ export default function App() {
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
-  const [highlightChunk, setHighlightChunk] = useState(null);
+  const [previewChunk, setPreviewChunk] = useState(null);
+  const [previewDoc, setPreviewDoc] = useState(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Composer state machine: idle | recording | transcribing | transcript_ready
+  const [composerState, setComposerState] = useState("idle");
+  const [pendingTranscript, setPendingTranscript] = useState("");
+  const [pendingLang, setPendingLang] = useState("");
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const recorder = useAudioRecorder();
 
-  const { isRecording, start: startRec, stop: stopRec } = useAudioRecorder();
-
-  // build index whenever chunks change
-  const index = useMemo(() => new TfIdfIndex(chunks), [chunks]);
-
-  // scroll to bottom on new message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, isThinking]);
+  }, [messages.length, isThinking, composerState]);
 
-  const handleUpload = async file => {
+  /* ----- Manual upload ----- */
+  const handleUploadManual = async file => {
     setIsUploading(true);
     setUploadError("");
     try {
-      // Guess brand from filename if possible
       const lower = file.name.toLowerCase();
       let brand = file.name.replace(/\.pdf$/i, "");
       if (lower.includes("royal") || lower.includes("enfield")) brand = "Royal Enfield (uploaded)";
@@ -912,7 +1232,7 @@ export default function App() {
 
       const newChunks = await parsePdfToChunks(file, brand);
       if (newChunks.length === 0) {
-        setUploadError("No extractable text found in this PDF (may be scanned images — try a text-based PDF).");
+        setUploadError("No extractable text found in this PDF (scanned image PDFs need OCR).");
       } else {
         setChunks(prev => [...prev, ...newChunks]);
       }
@@ -924,6 +1244,7 @@ export default function App() {
     }
   };
 
+  /* ----- Image picker ----- */
   const handleImagePick = e => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -937,62 +1258,65 @@ export default function App() {
     e.target.value = "";
   };
 
-  const handleVoiceToggle = async () => {
-    if (isRecording) {
-      const blob = await stopRec();
-      if (!blob) return;
-      if (!sarvamKey) {
-        setMessages(prev => [
-          ...prev,
-          {
-            role: "assistant",
-            refused: true,
-            text: "Voice input requires a Sarvam API key. Add one in Settings (top-right) — Sarvam's Saarika model handles Indian languages that browser ASR cannot. Or, just type your question.",
-          },
-        ]);
-        return;
-      }
-      try {
-        setIsThinking(true);
-        setThinkingStage("Transcribing with Sarvam Saarika...");
-        const { transcript, languageCode } = await sarvamSpeechToText({
-          audioBlob: blob,
-          apiKey: sarvamKey,
-          languageCode: voiceLang,
-        });
-        setIsThinking(false);
-        setThinkingStage("");
-        if (transcript) {
-          await handleSend(transcript, { detectedLang: languageCode });
-        }
-      } catch (e) {
-        setIsThinking(false);
-        setThinkingStage("");
-        setMessages(prev => [
-          ...prev,
-          {
-            role: "assistant",
-            refused: true,
-            text: `Voice transcription failed: ${e.message}. Check your Sarvam API key in Settings.`,
-          },
-        ]);
-      }
-    } else {
-      try {
-        await startRec();
-      } catch (e) {
-        setMessages(prev => [
-          ...prev,
-          {
-            role: "assistant",
-            refused: true,
-            text: "Microphone access was denied. Allow microphone permission in your browser to use voice input.",
-          },
-        ]);
-      }
+  /* ----- Voice flow ----- */
+  const handleStartRecording = async () => {
+    if (!sarvamKey) {
+      setSettingsOpen(true);
+      return;
+    }
+    try {
+      await recorder.start();
+      setComposerState("recording");
+    } catch (e) {
+      console.error(e);
+      alert("Microphone access denied. Please allow microphone permission.");
     }
   };
 
+  const handleStopRecording = async () => {
+    setComposerState("transcribing");
+    try {
+      const blob = await recorder.stop();
+      if (!blob) {
+        setComposerState("idle");
+        return;
+      }
+      const { transcript, languageCode } = await sarvamSpeechToText({
+        audioBlob: blob,
+        apiKey: sarvamKey,
+        languageCode: voiceLang,
+      });
+      if (!transcript || transcript.trim().length === 0) {
+        setComposerState("idle");
+        return;
+      }
+      setPendingTranscript(transcript);
+      setPendingLang(languageCode);
+      setComposerState("transcript_ready");
+    } catch (e) {
+      console.error(e);
+      alert(`Transcription failed: ${e.message}`);
+      setComposerState("idle");
+    }
+  };
+
+  const handleCancelRecording = () => {
+    recorder.cancel();
+    setComposerState("idle");
+    setPendingTranscript("");
+    setPendingLang("");
+  };
+
+  const handleSendTranscript = () => {
+    const t = pendingTranscript.trim();
+    const lang = pendingLang;
+    setPendingTranscript("");
+    setPendingLang("");
+    setComposerState("idle");
+    if (t) handleSend(t, { detectedLang: lang });
+  };
+
+  /* ----- Main send ----- */
   const handleSend = async (rawText, opts = {}) => {
     const text = (rawText ?? input).trim();
     if (!text && !pendingImage) return;
@@ -1001,7 +1325,7 @@ export default function App() {
 
     const userMsg = {
       role: "user",
-      text: text || "(see image)",
+      text: text || "(image attached)",
       image: image?.dataUrl,
       detectedLang,
     };
@@ -1011,11 +1335,9 @@ export default function App() {
     setIsThinking(true);
 
     try {
-      // Step 1: build retrieval query.
-      // If non-English voice input, translate to English first for retrieval (manuals are EN).
       let retrievalQuery = text;
       if (detectedLang && detectedLang !== "en-IN" && detectedLang !== "unknown" && sarvamKey) {
-        setThinkingStage("Translating for retrieval...");
+        setThinkingStage("Translating to English for retrieval...");
         try {
           retrievalQuery = await sarvamTranslate({
             text,
@@ -1028,14 +1350,13 @@ export default function App() {
         }
       }
 
-      // Step 1b: if image, ask Claude to describe the symptom in 1 line, then add to retrieval query
       let visionHint = "";
       if (image) {
         setThinkingStage("Analysing image...");
         try {
           visionHint = await callClaude({
             system:
-              "You are a motorcycle expert looking at a single image. In ONE short sentence (max 20 words), describe what symptom or condition you observe (e.g., 'white smoke from exhaust', 'broken chain link', 'corroded battery terminal'). Output the sentence only, no preamble.",
+              "You are a motorcycle expert looking at a single image. In ONE short sentence (max 20 words), describe what symptom or condition you observe. Output the sentence only, no preamble.",
             userText: "Describe the symptom or condition shown.",
             imageBase64: image.base64,
             imageMime: image.mime,
@@ -1046,12 +1367,10 @@ export default function App() {
         }
       }
 
-      // Step 2: TF-IDF retrieval
-      setThinkingStage("Searching manuals...");
+      setThinkingStage("Searching manual index...");
       const retrieved = index.search(retrievalQuery, 4);
       const topScore = retrieved[0]?.score || 0;
 
-      // Step 3: Guardrail — refuse before LLM if no decent match
       const THRESHOLD = 0.08;
       if (retrieved.length === 0 || topScore < THRESHOLD) {
         setMessages(prev => [
@@ -1068,20 +1387,20 @@ export default function App() {
         return;
       }
 
-      // Step 4: Call Claude with strict prompt
       setThinkingStage("Reasoning over retrieved context...");
       const systemPrompt = buildSystemPrompt();
       const userPrompt = buildUserMessage({
         question: text + (visionHint ? `\n\n(Image analysis: ${visionHint})` : ""),
         retrieved,
       });
-      const answer = await callClaude({
+      const rawAnswer = await callClaude({
         system: systemPrompt,
         userText: userPrompt,
         imageBase64: image?.base64,
         imageMime: image?.mime,
       });
 
+      const { answer, followups } = parseAnswerAndFollowups(rawAnswer);
       const refused = answer.trim() === REFUSAL_PHRASE || answer.includes(REFUSAL_PHRASE);
 
       const assistantMsg = {
@@ -1090,18 +1409,16 @@ export default function App() {
         retrieved: refused ? [] : retrieved,
         confidence: topScore,
         refused,
+        followups: refused ? [] : followups,
       };
 
-      // Step 5: optional TTS
       if (ttsEnabled && sarvamKey && !refused) {
-        setThinkingStage("Generating voice...");
+        setThinkingStage("Generating voice response...");
         try {
-          // strip citation markers for TTS
           const plain = answer.replace(/\[\d+\]/g, "").trim();
           const ttsLang = detectedLang && detectedLang !== "unknown" ? detectedLang : "en-IN";
           let toSpeak = plain;
           if (ttsLang !== "en-IN") {
-            // translate answer to user's language
             toSpeak = await sarvamTranslate({
               text: plain,
               apiKey: sarvamKey,
@@ -1137,206 +1454,280 @@ export default function App() {
     }
   };
 
-  const clearChat = () => setMessages([]);
+  /* ----- Conversation management ----- */
+  const handleNewConversation = () => {
+    const c = newConversation();
+    setConversations(prev => [c, ...prev]);
+    setActiveConversationId(c.id);
+    setInput("");
+    setPendingImage(null);
+    setComposerState("idle");
+  };
+
+  const handleSelectConversation = id => {
+    setActiveConversationId(id);
+    setInput("");
+    setPendingImage(null);
+    setComposerState("idle");
+  };
+
+  const handleDeleteConversation = id => {
+    setConversations(prev => {
+      const filtered = prev.filter(c => c.id !== id);
+      if (filtered.length === 0) {
+        const fresh = newConversation();
+        setActiveConversationId(fresh.id);
+        return [fresh];
+      }
+      if (id === activeConversationId) setActiveConversationId(filtered[0].id);
+      return filtered;
+    });
+  };
 
   return (
     <div
-      className="min-h-screen w-full"
+      className="h-screen w-full flex overflow-hidden"
       style={{
-        background:
-          "radial-gradient(ellipse at top, #FAFAF7 0%, #F3F1EA 100%)",
-        fontFamily: "'Google Sans Text', 'Google Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-        color: "#1a1a1a",
+        background: "#F4F7FC",
+        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        color: "#0A1628",
       }}
     >
       <style>{`
-        .font-display { font-family: 'Google Sans', 'Google Sans Text', -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: -0.01em; }
-        .font-body { font-family: 'Google Sans Text', 'Google Sans', -apple-system, BlinkMacSystemFont, sans-serif; }
-        .font-mono { font-family: 'Roboto Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
-        /* subtle paper grain */
-        .grain::before {
-          content: "";
-          position: fixed; inset: 0;
-          background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.04 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-          pointer-events: none;
-          z-index: 1;
-          mix-blend-mode: multiply;
-        }
+        .font-display { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-feature-settings: 'cv11', 'ss01', 'ss03'; }
+        .font-mono { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
         .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
-        .scrollbar-thin::-webkit-scrollbar-thumb { background: rgba(26,26,26,0.15); border-radius: 3px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
         @keyframes pulse-dot {
           0%, 100% { opacity: 0.3; }
           50% { opacity: 1; }
         }
         .pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
-        @keyframes recording-pulse {
-          0% { box-shadow: 0 0 0 0 rgba(200, 85, 61, 0.5); }
-          70% { box-shadow: 0 0 0 12px rgba(200, 85, 61, 0); }
-          100% { box-shadow: 0 0 0 0 rgba(200, 85, 61, 0); }
+        @keyframes record-pulse {
+          0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); }
+          70% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
         }
-        .recording-pulse { animation: recording-pulse 1.6s infinite; }
+        .record-pulse { animation: record-pulse 1.6s infinite; }
       `}</style>
-      <div className="grain" />
 
-      <div className="relative z-10 max-w-3xl mx-auto min-h-screen flex flex-col">
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(s => !s)}
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleSelectConversation}
+        onNewConversation={handleNewConversation}
+        onDeleteConversation={handleDeleteConversation}
+        documents={documents}
+        onSelectDocument={setPreviewDoc}
+        onUploadManual={handleUploadManual}
+        isUploading={isUploading}
+        uploadError={uploadError}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
+
+      {/* MAIN AREA */}
+      <main className="flex-1 flex flex-col min-w-0 bg-[#F4F7FC]">
         {/* Header */}
-        <header className="px-5 py-4 border-b border-[#1a1a1a]/8 flex items-center justify-between backdrop-blur-sm sticky top-0 bg-[#FAFAF7]/80 z-20">
-          <Brand />
-          <div className="flex items-center gap-1">
-            {messages.length > 0 && (
-              <button
-                onClick={clearChat}
-                className="text-[#7a7a72] hover:text-[#1a1a1a] p-1.5 rounded transition-colors"
-                title="Clear chat"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            )}
-            <button
-              onClick={() => setSettingsOpen(true)}
-              className="text-[#7a7a72] hover:text-[#1a1a1a] p-1.5 rounded transition-colors"
-              title="Settings"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
+        <header className="px-6 py-3.5 border-b border-[#E2E8F0]/70 bg-white/60 backdrop-blur-sm flex items-center justify-between">
+          <div className="text-[13px] font-medium text-[#0A1628] truncate flex-1">
+            {activeConversation.title === "New conversation" ? "New diagnosis" : activeConversation.title}
+          </div>
+          <div className="text-[10px] font-mono text-[#94A3B8] flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]"></span>
+            <span>{chunks.length} chunks indexed</span>
           </div>
         </header>
 
-        {/* Manual library strip */}
-        <ManualLibrary
-          chunks={chunks}
-          onUpload={handleUpload}
-          isUploading={isUploading}
-          uploadError={uploadError}
-        />
-
         {/* Messages */}
-        <main className="flex-1 overflow-y-auto scrollbar-thin px-5 py-7">
-          {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center min-h-[55vh] text-center">
-              <div className="mb-8">
-                <div className="font-display text-[42px] leading-[1.05] text-[#1a1a1a] tracking-[-0.02em] font-medium">
-                  What's wrong with
-                  <br />
-                  your bike?
-                </div>
-                <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-[#7a7a72] mt-4">
-                  Answers grounded only in your manual
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-4 mb-10 max-w-md w-full">
-                <FeatureChip icon={<FileText className="w-3.5 h-3.5" />} label="Manual-grounded" />
-                <FeatureChip icon={<Mic className="w-3.5 h-3.5" />} label="Voice in 11 languages" />
-                <FeatureChip icon={<ImageIcon className="w-3.5 h-3.5" />} label="Image diagnosis" />
-              </div>
-
-              <SuggestionChips onPick={s => handleSend(s)} />
-
-              <div className="mt-12 text-[11px] font-mono text-[#7a7a72] max-w-md leading-relaxed">
-                Loaded with sample sections for Royal Enfield Classic 350, TVS Apache RTR 160, and Bajaj Pulsar 150. Add your own manual via the strip above.
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {messages.map((m, i) => (
-                <MessageBubble key={i} msg={m} onCitationClick={idx => setHighlightChunk(m.retrieved?.[idx]?.chunk)} />
-              ))}
-              {isThinking && (
-                <div className="flex items-center gap-2.5 mb-7 text-[#7a7a72]">
-                  <div className="flex gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#1a1a1a] pulse-dot" style={{ animationDelay: "0s" }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#1a1a1a] pulse-dot" style={{ animationDelay: "0.2s" }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#1a1a1a] pulse-dot" style={{ animationDelay: "0.4s" }} />
-                  </div>
-                  <span className="text-[11.5px] font-mono">{thinkingStage || "Thinking..."}</span>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
-        </main>
-
-        {/* Composer */}
-        <footer className="px-5 pb-5 pt-2 sticky bottom-0 bg-gradient-to-t from-[#FAFAF7] via-[#FAFAF7] to-transparent">
-          {pendingImage && (
-            <div className="mb-2 inline-flex items-center gap-2 bg-white border border-[#1a1a1a]/15 rounded-lg p-1.5 pr-3">
-              <img src={pendingImage.dataUrl} className="w-10 h-10 object-cover rounded" />
-              <span className="text-[12px] text-[#3a3a35]">Image attached</span>
-              <button onClick={() => setPendingImage(null)} className="text-[#7a7a72] hover:text-[#C8553D]">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-          <div className="bg-white border border-[#1a1a1a]/15 rounded-2xl shadow-sm focus-within:border-[#1a1a1a]/40 transition-colors">
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder={isRecording ? "Listening..." : "Describe the issue, or speak / attach a photo"}
-              disabled={isThinking || isRecording}
-              rows={1}
-              className="w-full px-4 py-3 bg-transparent text-[14.5px] focus:outline-none resize-none placeholder:text-[#7a7a72]/70 disabled:opacity-50"
-              style={{ maxHeight: 120 }}
-            />
-            <div className="flex items-center justify-between px-2 pb-2">
-              <div className="flex items-center gap-0.5">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isThinking}
-                  className="p-2 text-[#7a7a72] hover:text-[#1a1a1a] hover:bg-[#1a1a1a]/5 rounded-lg transition-colors disabled:opacity-50"
-                  title="Attach image"
-                >
-                  <ImageIcon className="w-4 h-4" />
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={handleImagePick}
-                />
-                <button
-                  onClick={handleVoiceToggle}
-                  disabled={isThinking}
-                  className={`p-2 rounded-lg transition-colors disabled:opacity-50 ${
-                    isRecording
-                      ? "bg-[#C8553D] text-white recording-pulse"
-                      : "text-[#7a7a72] hover:text-[#1a1a1a] hover:bg-[#1a1a1a]/5"
-                  }`}
-                  title={isRecording ? "Stop recording" : "Voice input"}
-                >
-                  {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                </button>
-                {sarvamKey && (
-                  <div className="flex items-center gap-1 px-2 ml-1 text-[10px] font-mono text-[#7a7a72]">
-                    <Languages className="w-3 h-3" />
-                    <span>{voiceLang === "unknown" ? "auto" : voiceLang}</span>
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="max-w-3xl mx-auto px-6 py-8">
+            {messages.length === 0 ? (
+              <EmptyState onPick={s => handleSend(s)} />
+            ) : (
+              <>
+                {messages.map((m, i) => (
+                  <MessageBubble
+                    key={i}
+                    msg={m}
+                    onCitationClick={chunk => setPreviewChunk(chunk)}
+                    onFollowupClick={q => handleSend(q)}
+                  />
+                ))}
+                {isThinking && (
+                  <div className="flex items-center gap-2.5 mb-6 text-[#5B6B85]">
+                    <div className="flex gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB] pulse-dot" style={{ animationDelay: "0s" }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB] pulse-dot" style={{ animationDelay: "0.2s" }} />
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB] pulse-dot" style={{ animationDelay: "0.4s" }} />
+                    </div>
+                    <span className="text-[11.5px] font-mono">{thinkingStage || "Thinking..."}</span>
                   </div>
                 )}
-              </div>
-              <button
-                onClick={() => handleSend()}
-                disabled={isThinking || (!input.trim() && !pendingImage)}
-                className="px-3 py-1.5 bg-[#1a1a1a] text-[#FAFAF7] rounded-lg text-[13px] font-medium hover:bg-[#C8553D] transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5"
-              >
-                {isThinking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                Diagnose
-              </button>
-            </div>
+                <div ref={messagesEndRef} />
+              </>
+            )}
           </div>
-          <div className="text-center text-[10px] font-mono text-[#7a7a72] mt-2">
-            Answers strictly grounded in indexed manual sections. For safety-critical issues, see your service center.
-          </div>
-        </footer>
-      </div>
+        </div>
 
-      <SettingsPanel
+        {/* Composer */}
+        <div className="px-6 pb-5 pt-3 bg-gradient-to-t from-[#F4F7FC] via-[#F4F7FC] to-transparent">
+          <div className="max-w-3xl mx-auto">
+            {pendingImage && composerState === "idle" && (
+              <div className="mb-2 inline-flex items-center gap-2 bg-white border border-[#E2E8F0] rounded-lg p-1.5 pr-3">
+                <img src={pendingImage.dataUrl} className="w-10 h-10 object-cover rounded" />
+                <span className="text-[12px] text-[#0A1628]">Image attached</span>
+                <button onClick={() => setPendingImage(null)} className="text-[#5B6B85] hover:text-[#DC2626]">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {composerState === "recording" && (
+              <div className="bg-white border-2 border-[#DC2626]/30 rounded-2xl p-3 shadow-sm">
+                <div className="flex items-center gap-3 px-2">
+                  <div className="flex items-center gap-2 flex-1">
+                    <div className="w-2 h-2 rounded-full bg-[#DC2626] record-pulse"></div>
+                    <span className="text-[12px] font-mono text-[#DC2626] uppercase tracking-wider">Recording</span>
+                    <div className="flex-1 ml-2">
+                      <AudioLevelMeter level={recorder.audioLevel} />
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleCancelRecording}
+                    className="px-3 py-1.5 text-[12.5px] text-[#5B6B85] hover:text-[#0A1628] hover:bg-[#F1F5F9] rounded-lg font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleStopRecording}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-lg text-[12.5px] font-medium transition-colors"
+                  >
+                    <Square className="w-3 h-3 fill-current" strokeWidth={0} />
+                    Stop & transcribe
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {composerState === "transcribing" && (
+              <div className="bg-white border border-[#E2E8F0] rounded-2xl p-4 shadow-sm">
+                <div className="flex items-center gap-3 text-[#5B6B85]">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#2563EB]" />
+                  <span className="text-[13px] font-mono">Transcribing with Sarvam Saarika...</span>
+                </div>
+              </div>
+            )}
+
+            {composerState === "transcript_ready" && (
+              <div className="bg-white border border-[#BFDBFE] rounded-2xl p-3 shadow-sm">
+                <div className="flex items-center justify-between px-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-[#2563EB] font-semibold">
+                      Transcript ready
+                    </div>
+                    {pendingLang && pendingLang !== "unknown" && (
+                      <div className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-[#EFF6FF] rounded text-[10px] font-mono text-[#1D4ED8]">
+                        <Languages className="w-2.5 h-2.5" />
+                        {pendingLang}
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-[10px] font-mono text-[#94A3B8]">Edit if needed</div>
+                </div>
+                <textarea
+                  value={pendingTranscript}
+                  onChange={e => setPendingTranscript(e.target.value)}
+                  rows={2}
+                  className="w-full px-2 py-1 text-[14px] bg-transparent focus:outline-none resize-none text-[#0A1628]"
+                  autoFocus
+                />
+                <div className="flex items-center justify-end gap-2 px-2 pt-2 border-t border-[#E2E8F0]">
+                  <button
+                    onClick={handleCancelRecording}
+                    className="px-3 py-1.5 text-[12.5px] text-[#5B6B85] hover:text-[#DC2626] hover:bg-[#FEE2E2] rounded-lg font-medium transition-colors"
+                  >
+                    Discard
+                  </button>
+                  <button
+                    onClick={handleSendTranscript}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-lg text-[12.5px] font-medium transition-colors"
+                  >
+                    <Send className="w-3 h-3" />
+                    Send
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {composerState === "idle" && (
+              <div className="bg-white border border-[#E2E8F0] rounded-2xl shadow-sm focus-within:border-[#2563EB] focus-within:shadow-blue-500/5 transition-all">
+                <textarea
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  placeholder="Describe the issue, speak it, or attach a photo"
+                  disabled={isThinking}
+                  rows={1}
+                  className="w-full px-4 py-3 bg-transparent text-[14.5px] focus:outline-none resize-none placeholder:text-[#94A3B8] disabled:opacity-50"
+                  style={{ maxHeight: 140 }}
+                />
+                <div className="flex items-center justify-between px-2 pb-2">
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isThinking}
+                      className="p-2 text-[#5B6B85] hover:text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
+                      title="Attach image"
+                    >
+                      <ImageIcon className="w-4 h-4" />
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleImagePick}
+                    />
+                    <button
+                      onClick={handleStartRecording}
+                      disabled={isThinking}
+                      className="p-2 text-[#5B6B85] hover:text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
+                      title={sarvamKey ? "Voice input" : "Voice input (add Sarvam key in Settings)"}
+                    >
+                      <Mic className="w-4 h-4" />
+                    </button>
+                    {sarvamKey && (
+                      <div className="flex items-center gap-1 px-2 ml-1 text-[10px] font-mono text-[#94A3B8]">
+                        <Languages className="w-3 h-3" />
+                        <span>{voiceLang === "unknown" ? "auto" : voiceLang}</span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleSend()}
+                    disabled={isThinking || (!input.trim() && !pendingImage)}
+                    className="px-3.5 py-1.5 bg-[#2563EB] text-white rounded-lg text-[13px] font-medium hover:bg-[#1D4ED8] transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  >
+                    {isThinking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    <span>Diagnose</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+
+      <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         sarvamKey={sarvamKey}
@@ -1347,46 +1738,50 @@ export default function App() {
         setTtsEnabled={setTtsEnabled}
       />
 
-      {/* Chunk preview modal */}
-      {highlightChunk && (
-        <div
-          className="fixed inset-0 z-50 bg-[#1a1a1a]/40 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => setHighlightChunk(null)}
-        >
-          <div
-            className="bg-[#FAFAF7] border border-[#1a1a1a]/15 rounded-2xl max-w-lg w-full p-6 shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex justify-between items-start mb-4">
-              <div>
-                <div className="font-display text-[20px] text-[#1a1a1a] leading-tight font-medium tracking-tight">
-                  {highlightChunk.brand}
-                </div>
-                <div className="text-[11px] font-mono text-[#7a7a72] mt-1">
-                  {highlightChunk.source} · {highlightChunk.section} · p.{highlightChunk.page}
-                </div>
-              </div>
-              <button onClick={() => setHighlightChunk(null)} className="text-[#7a7a72] hover:text-[#1a1a1a]">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="text-[13.5px] text-[#1a1a1a] leading-relaxed whitespace-pre-wrap">
-              {highlightChunk.text}
-            </div>
-          </div>
-        </div>
-      )}
+      <DocumentPreviewModal
+        doc={previewDoc}
+        onClose={() => setPreviewDoc(null)}
+        onSelectChunk={chunk => {
+          setPreviewDoc(null);
+          setPreviewChunk(chunk);
+        }}
+      />
+
+      <ChunkPreviewModal chunk={previewChunk} onClose={() => setPreviewChunk(null)} />
     </div>
   );
 }
 
-function FeatureChip({ icon, label }) {
+function EmptyState({ onPick }) {
+  const suggestions = [
+    "White smoke from my Royal Enfield's exhaust",
+    "Apache RTR engine light is on, what does it mean?",
+    "Pulsar 150 won't start in the morning",
+    "Chain slack — what's the correct adjustment?",
+  ];
   return (
-    <div className="flex flex-col items-center gap-1.5 text-[#3a3a35]">
-      <div className="w-8 h-8 rounded-md border border-[#1a1a1a]/15 flex items-center justify-center bg-white">
-        {icon}
+    <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] flex items-center justify-center mb-5 shadow-lg shadow-blue-500/20">
+        <Wrench className="w-7 h-7 text-white" strokeWidth={2} />
       </div>
-      <div className="text-[10.5px] font-mono text-[#7a7a72] text-center leading-tight">{label}</div>
+      <div className="font-display text-[34px] leading-[1.1] text-[#0A1628] tracking-[-0.02em] font-bold mb-2">
+        What's wrong with your bike?
+      </div>
+      <div className="text-[14px] text-[#5B6B85] mb-8 max-w-md">
+        Ask a question, speak it, or attach a photo. Every answer is grounded in your manual sections with verifiable citations.
+      </div>
+
+      <div className="flex flex-wrap gap-2 justify-center max-w-2xl">
+        {suggestions.map(s => (
+          <button
+            key={s}
+            onClick={() => onPick(s)}
+            className="px-3.5 py-2 text-[12.5px] text-[#0A1628] bg-white border border-[#E2E8F0] rounded-full hover:border-[#2563EB] hover:bg-[#EFF6FF] hover:text-[#1D4ED8] transition-all"
+          >
+            {s}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
