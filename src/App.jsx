@@ -30,7 +30,9 @@ import {
   PhoneOff,
 } from "lucide-react";
 
-
+/* ============================================================
+   FONTS — Inter + JetBrains Mono. No Roboto, no Google Sans.
+   ============================================================ */
 const FONT_LINK_ID = "bta-fonts";
 function ensureFonts() {
   if (typeof document === "undefined") return;
@@ -581,7 +583,7 @@ function writeStored(key, value) {
 /* ============================================================
    CLAUDE
    ============================================================ */
-async function callClaude({ system, userText, imageBase64, imageMime, history = [] }) {
+async function callClaude({ system, userText, imageBase64, imageMime, history = [], model }) {
   const userContent = [];
   if (imageBase64) {
     userContent.push({
@@ -602,7 +604,7 @@ async function callClaude({ system, userText, imageBase64, imageMime, history = 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model: model || "claude-sonnet-4-6",
       max_tokens: 1200,
       system,
       messages,
@@ -614,6 +616,27 @@ async function callClaude({ system, userText, imageBase64, imageMime, history = 
   }
   const data = await res.json();
   return data.content.map(c => (c.type === "text" ? c.text : "")).join("").trim();
+}
+
+/* Fast/cheap model alias. In the artifact preview this stays the same as
+   the main model (Haiku isn't available in the sandbox), but the deploy
+   build sed-flips it to claude-haiku-4-5 for ~50% faster query rewriting
+   and voice-mode responses. */
+const CLAUDE_FAST_MODEL = "claude-haiku-4-5";
+
+/* Heuristic: only rewrite the query when it actually looks like a context-
+   dependent follow-up. For long standalone questions, skip the extra LLM
+   call entirely — saves ~1-2 seconds of latency. */
+function shouldRewriteQuery(question) {
+  const lc = question.trim().toLowerCase();
+  const words = lc.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+  if (words.length <= 4) return true; // very short queries are usually follow-ups
+  // Pronouns / contextual references
+  if (/\b(it|this|that|these|those|them|they|next|more|continue|also|then|same|like|too|further|previous|after that)\b/.test(lc)) return true;
+  // Follow-up starters
+  if (/^(what about|how about|and |but |so |okay|ok |tell me|can you|will it|is there|are there|do i|should i|why|how do i)\b/.test(lc)) return true;
+  return false;
 }
 
 /* Build conversation history in Anthropic API format from the local messages
@@ -659,6 +682,7 @@ Output ONLY the rewritten question. No preamble, no quotes, no explanation.`;
     const rewritten = await callClaude({
       system: "You rewrite follow-up motorcycle questions as standalone search queries. Output ONLY the rewritten question text.",
       userText: prompt,
+      model: CLAUDE_FAST_MODEL,
     });
     const cleaned = (rewritten || question)
       .replace(/^["'`\s]+|["'`\s]+$/g, "")
@@ -1568,7 +1592,29 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
   const exitingRef = useRef(false);
   const stateRef = useRef(state);
   const panelScrollRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const [voiceImage, setVoiceImage] = useState(null); // {dataUrl, base64, mime}
   useEffect(() => { stateRef.current = state; }, [state]);
+
+  const handleImagePick = e => {
+    const f = e.target.files?.[0];
+    if (f && f.type?.startsWith("image/")) {
+      if (f.size > 3 * 1024 * 1024) {
+        setErrorMsg(`Image too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 3 MB.`);
+        setState("error");
+        e.target.value = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        const base64 = dataUrl.split(",")[1];
+        setVoiceImage({ dataUrl, base64, mime: f.type });
+      };
+      reader.readAsDataURL(f);
+    }
+    e.target.value = "";
+  };
 
   // Auto-scroll the live session panel as new messages arrive
   useEffect(() => {
@@ -1690,6 +1736,10 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
       // this turn's exchange so it represents only "what came before".
       const history = buildConversationHistory(messages, 3);
 
+      // Snapshot the image (if any) for this turn — capture & clear so the
+      // next turn doesn't accidentally reuse it.
+      const turnImage = voiceImage;
+
       // Translate to English for retrieval if needed
       let retrievalQuery = transcript;
       if (languageCode && languageCode !== "en-IN" && languageCode !== "unknown") {
@@ -1705,9 +1755,24 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
         }
       }
 
-      // Rewrite query if there's prior context (so retrieval finds the right chunks
-      // even for follow-ups like "what's the next step?")
-      if (history.length > 0) {
+      // If there's an attached image, get a one-line visual cue and append
+      // to retrieval query — same trick as text mode. Uses fast model.
+      let visionHint = "";
+      if (turnImage) {
+        try {
+          visionHint = await callClaude({
+            system: "You are looking at one motorcycle image. In ONE short sentence (max 20 words), describe the symptom or condition visible. Output the sentence only.",
+            userText: "Describe what you see.",
+            imageBase64: turnImage.base64,
+            imageMime: turnImage.mime,
+            model: CLAUDE_FAST_MODEL,
+          });
+          retrievalQuery = (retrievalQuery + " " + visionHint).trim();
+        } catch (e) { console.warn("Voice mode vision hint failed:", e); }
+      }
+
+      // Rewrite query only when it actually looks contextual — saves latency
+      if (history.length > 0 && shouldRewriteQuery(retrievalQuery)) {
         retrievalQuery = await rewriteFollowUpQuery(retrievalQuery, history);
       }
 
@@ -1723,8 +1788,14 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
       } else {
         const raw = await callClaude({
           system: buildVoiceModeSystemPrompt(),
-          userText: buildUserMessage({ question: transcript, retrieved }),
+          userText: buildUserMessage({
+            question: transcript + (visionHint ? `\n(Image: ${visionHint})` : ""),
+            retrieved,
+          }),
+          imageBase64: turnImage?.base64,
+          imageMime: turnImage?.mime,
           history,
+          model: CLAUDE_FAST_MODEL,
         });
         // Strip any stray markdown / citation markers / followups section
         answer = raw
@@ -1739,9 +1810,12 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
       if (exitingRef.current) return;
       setAssistantText(answer);
 
+      // Clear the attached image now that this turn is done.
+      setVoiceImage(null);
+
       // Log to chat history
       addExchange(
-        { role: "user", text: transcript, detectedLang: languageCode, voiceMode: true },
+        { role: "user", text: transcript, detectedLang: languageCode, voiceMode: true, image: turnImage?.dataUrl },
         { role: "assistant", text: answer, retrieved: refused ? [] : retrieved, confidence: topScore, refused, voiceMode: true }
       );
 
@@ -1940,12 +2014,45 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
                   );
                 })}
               </div>
-              <button
-                onClick={handleManualDone}
-                className="px-4 py-1.5 bg-white text-[#0A1628] rounded-full text-[12.5px] font-medium hover:bg-white/90 transition-colors"
-              >
-                Done speaking
-              </button>
+
+              {/* Attached image thumbnail (if any) */}
+              {voiceImage && (
+                <div className="inline-flex items-center gap-2 bg-white/10 border border-white/15 rounded-lg p-1.5 pr-3 backdrop-blur-sm">
+                  <img src={voiceImage.dataUrl} className="w-9 h-9 object-cover rounded" alt="" />
+                  <span className="text-[11.5px] text-white/80">Image will go with your next message</span>
+                  <button
+                    onClick={() => setVoiceImage(null)}
+                    className="text-white/50 hover:text-white"
+                    title="Remove image"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => imageInputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/15 text-white/90 border border-white/15 rounded-full text-[11.5px] font-medium transition-colors backdrop-blur-sm"
+                  title="Attach an image to your next message"
+                >
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  {voiceImage ? "Change image" : "Attach image"}
+                </button>
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleImagePick}
+                />
+                <button
+                  onClick={handleManualDone}
+                  className="px-4 py-1.5 bg-white text-[#0A1628] rounded-full text-[12.5px] font-medium hover:bg-white/90 transition-colors"
+                >
+                  Done speaking
+                </button>
+              </div>
             </div>
           )}
 
@@ -2292,7 +2399,8 @@ export default function App() {
 
       // 2. If we have prior conversation, rewrite the query to be standalone
       //    so retrieval actually works on follow-ups like "next steps".
-      if (history.length > 0) {
+      //    Skip the LLM call when the question already looks self-contained.
+      if (history.length > 0 && shouldRewriteQuery(retrievalQuery)) {
         setThinkingStage("Understanding context...");
         retrievalQuery = await rewriteFollowUpQuery(retrievalQuery, history);
       }
@@ -2705,10 +2813,14 @@ export default function App() {
                       <span>Voice mode</span>
                     </button>
                     {voiceReady && (
-                      <div className="flex items-center gap-1 px-2 ml-1 text-[10px] font-mono text-[#94A3B8]">
+                      <button
+                        onClick={() => setSettingsOpen(true)}
+                        className="flex items-center gap-1 px-2 ml-1 py-0.5 text-[10.5px] font-mono text-[#64748B] hover:text-[#0A1628] hover:bg-[#F1F5F9] rounded-md transition-colors"
+                        title="Change voice language"
+                      >
                         <Languages className="w-3 h-3" />
                         <span>{voiceLang === "unknown" ? "auto" : voiceLang}</span>
-                      </div>
+                      </button>
                     )}
                   </div>
                   <button
