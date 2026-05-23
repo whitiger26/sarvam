@@ -28,6 +28,7 @@ import {
   ArrowRight,
   AudioLines,
   PhoneOff,
+  Menu,
 } from "lucide-react";
 
 /* ============================================================
@@ -580,6 +581,55 @@ function writeStored(key, value) {
   } catch {}
 }
 
+/* Compress / resize an uploaded image client-side before sending to Claude
+   vision. Resizes to fit within MAX_DIM on the longest side (1568px is the
+   Anthropic recommendation for fastest vision processing) and re-encodes as
+   JPEG. Keeps base64 payload well under Vercel's 4.5MB body limit even when
+   the user uploads a 5MB phone photo. */
+function compressImageForVision(file, maxDim = 1568, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      // White background for transparent PNGs converted to JPEG
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        blob => {
+          if (!blob) { reject(new Error("Image compression failed")); return; }
+          const reader = new FileReader();
+          reader.onload = () => {
+            const dataUrl = reader.result;
+            const base64 = dataUrl.split(",")[1];
+            resolve({ dataUrl, base64, mime: "image/jpeg" });
+          };
+          reader.onerror = () => reject(new Error("Read error after compression"));
+          reader.readAsDataURL(blob);
+        },
+        "image/jpeg",
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read image — file may be corrupt or unsupported"));
+    };
+    img.src = url;
+  });
+}
+
 /* ============================================================
    CLAUDE
    ============================================================ */
@@ -807,13 +857,70 @@ function useAudioRecorder() {
     audioContextRef.current = null;
   };
 
+  // Pick a MIME type the browser actually supports. iOS Safari/Chrome (all
+  // iOS browsers are WebKit) don't support audio/webm at all — they use
+  // audio/mp4. Try a list in order; fall back to the browser default if
+  // nothing matches (most browsers will then pick something sensible).
+  const pickRecorderMime = () => {
+    if (typeof MediaRecorder === "undefined") return "";
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/mp4;codecs=mp4a.40.2",
+      "audio/mp4",
+      "audio/mpeg",
+      "audio/wav",
+    ];
+    for (const c of candidates) {
+      try { if (MediaRecorder.isTypeSupported(c)) return c; } catch {}
+    }
+    return ""; // let the browser pick
+  };
+
   const start = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Pre-flight: feature detect. Some old browsers / WebViews have no mediaDevices.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error("This browser doesn't support microphone access. Try Safari or Chrome over HTTPS.");
+    }
+    if (typeof MediaRecorder === "undefined") {
+      throw new Error("This browser doesn't support audio recording.");
+    }
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      // Decode the error properly so users get an accurate message
+      const name = e?.name || "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        throw new Error("Microphone permission denied. Allow microphone access in your browser settings, then reload the page.");
+      }
+      if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        throw new Error("No microphone found on this device.");
+      }
+      if (name === "NotReadableError" || name === "TrackStartError") {
+        throw new Error("Microphone is in use by another app. Close other apps using the mic and try again.");
+      }
+      if (name === "SecurityError") {
+        throw new Error("Microphone requires an HTTPS connection.");
+      }
+      throw new Error(e?.message || "Could not access the microphone.");
+    }
     streamRef.current = stream;
 
     const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) {
+      cleanup();
+      throw new Error("Your browser doesn't support audio analysis.");
+    }
     const ctx = new AC();
     audioContextRef.current = ctx;
+    // iOS often creates the AudioContext suspended — must be resumed
+    // explicitly after a user gesture. This start() is itself called from
+    // a tap, so resume should succeed.
+    if (ctx.state === "suspended") {
+      try { await ctx.resume(); } catch {}
+    }
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     const source = ctx.createMediaStreamSource(stream);
@@ -829,10 +936,19 @@ function useAudioRecorder() {
     };
     tick();
 
-    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus"
-      : "audio/webm";
-    const mr = new MediaRecorder(stream, { mimeType: mime });
+    // Create the recorder with whatever MIME type the browser supports.
+    const mime = pickRecorderMime();
+    let mr;
+    try {
+      mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    } catch (e) {
+      // Last-ditch: try with no options
+      try { mr = new MediaRecorder(stream); }
+      catch (e2) {
+        cleanup();
+        throw new Error("This browser can't record audio in any supported format.");
+      }
+    }
     chunksRef.current = [];
     mr.ondataavailable = e => {
       if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
@@ -930,14 +1046,20 @@ function Sidebar({
   isUploading,
   uploadError,
   onOpenSettings,
+  mobileOpen,
+  onMobileClose,
 }) {
   const fileInputRef = useRef(null);
 
   return (
     <aside
-      className={`bg-white/50 backdrop-blur-sm border-r border-[#E5E4DF]/70 flex flex-col transition-all duration-200 ease-out ${
-        collapsed ? "w-[56px]" : "w-[280px]"
-      }`}
+      className={`
+        bg-white/95 md:bg-white/50 backdrop-blur-sm border-r border-[#E5E4DF]/70 flex flex-col
+        transition-transform duration-200 ease-out
+        fixed md:relative inset-y-0 left-0 z-50
+        w-[280px] ${collapsed ? "md:w-[56px]" : "md:w-[280px]"}
+        ${mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
+      `}
     >
       {/* Logo & collapse toggle */}
       {collapsed ? (
@@ -945,7 +1067,7 @@ function Sidebar({
           <Logo collapsed={true} />
           <button
             onClick={onToggleCollapse}
-            className="text-[#64748B] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
+            className="hidden md:block text-[#64748B] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
             title="Expand sidebar"
           >
             <PanelLeftOpen className="w-4 h-4" />
@@ -954,13 +1076,22 @@ function Sidebar({
       ) : (
         <div className="flex items-center justify-between px-4 pt-4 pb-2">
           <Logo collapsed={false} />
-          <button
-            onClick={onToggleCollapse}
-            className="text-[#64748B] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
-            title="Collapse sidebar"
-          >
-            <PanelLeftClose className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onToggleCollapse}
+              className="hidden md:block text-[#64748B] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
+              title="Collapse sidebar"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onMobileClose}
+              className="md:hidden text-[#64748B] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
+              title="Close menu"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -1392,14 +1523,7 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
         </div>
 
         <div className="space-y-4">
-          {SARVAM_USE_PROXY ? (
-            <div className="rounded-lg bg-[#F0F9FF] border border-[#BFDBFE] p-3">
-              <div className="text-[12.5px] text-[#0A1628] font-medium mb-0.5">Voice services ready</div>
-              <div className="text-[11.5px] text-[#475569] leading-relaxed">
-                Sarvam (voice input, voice output, and translation) is configured by the host. No key needed.
-              </div>
-            </div>
-          ) : (
+          {!SARVAM_USE_PROXY && (
             <div>
               <label className="block text-[12.5px] font-medium text-[#0A1628] mb-1.5">
                 Sarvam API key
@@ -1473,30 +1597,30 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
 function DocumentPreviewModal({ doc, onClose, onSelectChunk }) {
   if (!doc) return null;
   return (
-    <div className="fixed inset-0 z-50 bg-[#0A1628]/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-[#0A1628]/40 backdrop-blur-sm flex items-center justify-center p-3 md:p-4" onClick={onClose}>
       <div
-        className="bg-white border border-[#E5E4DF] rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col shadow-2xl shadow-blue-500/10"
+        className="bg-white border border-[#E5E4DF] rounded-2xl max-w-2xl w-full max-h-[88vh] md:max-h-[80vh] flex flex-col shadow-2xl shadow-blue-500/10"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex justify-between items-start p-6 border-b border-[#E5E4DF]">
-          <div className="flex items-start gap-3">
+        <div className="flex justify-between items-start p-4 md:p-6 border-b border-[#E5E4DF]">
+          <div className="flex items-start gap-3 min-w-0">
             <div className="w-10 h-10 rounded-lg bg-[#EFF6FF] flex items-center justify-center flex-shrink-0">
               <FileText className="w-5 h-5 text-[#2563EB]" />
             </div>
-            <div>
-              <div className="font-display text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight">
+            <div className="min-w-0">
+              <div className="font-display text-[16px] md:text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight truncate">
                 {doc.brand}
               </div>
-              <div className="text-[12px] text-[#5B6B85] mt-0.5 font-mono">
+              <div className="text-[12px] text-[#5B6B85] mt-0.5 font-mono truncate">
                 {doc.source} · {doc.chunks.length} section{doc.chunks.length === 1 ? "" : "s"}
               </div>
             </div>
           </div>
-          <button onClick={onClose} className="text-[#5B6B85] hover:text-[#0A1628] p-1">
+          <button onClick={onClose} className="text-[#5B6B85] hover:text-[#0A1628] p-1 flex-shrink-0">
             <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto scrollbar-thin p-5 space-y-3">
+        <div className="flex-1 overflow-y-auto scrollbar-thin p-4 md:p-5 space-y-3">
           {doc.chunks.map((chunk, i) => (
             <button
               key={chunk.id}
@@ -1525,9 +1649,9 @@ function DocumentPreviewModal({ doc, onClose, onSelectChunk }) {
 function ChunkPreviewModal({ chunk, onClose }) {
   if (!chunk) return null;
   return (
-    <div className="fixed inset-0 z-[60] bg-[#0A1628]/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[60] bg-[#0A1628]/50 backdrop-blur-sm flex items-center justify-center p-3 md:p-4" onClick={onClose}>
       <div
-        className="bg-white border border-[#E5E4DF] rounded-2xl max-w-lg w-full p-6 shadow-2xl"
+        className="bg-white border border-[#E5E4DF] rounded-2xl max-w-lg w-full max-h-[88vh] flex flex-col p-5 md:p-6 shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex justify-between items-start mb-4">
@@ -1596,24 +1720,22 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
   const [voiceImage, setVoiceImage] = useState(null); // {dataUrl, base64, mime}
   useEffect(() => { stateRef.current = state; }, [state]);
 
-  const handleImagePick = e => {
+  const handleImagePick = async e => {
     const f = e.target.files?.[0];
-    if (f && f.type?.startsWith("image/")) {
-      if (f.size > 3 * 1024 * 1024) {
-        setErrorMsg(`Image too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 3 MB.`);
-        setState("error");
-        e.target.value = "";
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result;
-        const base64 = dataUrl.split(",")[1];
-        setVoiceImage({ dataUrl, base64, mime: f.type });
-      };
-      reader.readAsDataURL(f);
-    }
     e.target.value = "";
+    if (!f || !f.type?.startsWith("image/")) return;
+    if (f.size > 5 * 1024 * 1024) {
+      setErrorMsg(`Image too large (${(f.size / 1024 / 1024).toFixed(1)} MB). Maximum is 5 MB.`);
+      setState("error");
+      return;
+    }
+    try {
+      const compressed = await compressImageForVision(f);
+      setVoiceImage(compressed);
+    } catch (err) {
+      setErrorMsg(`Couldn't process image: ${err.message}`);
+      setState("error");
+    }
   };
 
   // Auto-scroll the live session panel as new messages arrive
@@ -1658,19 +1780,21 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
 
   // Voice Activity Detection while listening.
   // Strategy: track a decaying peak of recent audio levels. "Speaking" means
-  // current level is at least 45% of that recent peak (relative threshold —
-  // adapts to mic sensitivity and room noise). "Silence" means we've stayed
-  // below that bar for SILENCE_DURATION_MS. This is robust to noisy rooms
-  // where absolute thresholds fail.
+  // current level is at least 45% of that recent peak AND we've sustained
+  // it for at least MIN_SPEECH_DURATION_MS. Brief noise spikes (clicks,
+  // chair shifts, distant traffic) don't reach the sustained threshold and
+  // get silently discarded instead of triggering a false STT round-trip.
   useEffect(() => {
     if (state !== "listening") return;
     const SILENCE_DURATION_MS = 900;
-    const MAX_LISTEN_MS = 12000;
-    const MIN_PEAK_FOR_SPEECH = 0.025; // sanity floor — peak must actually be meaningful
+    const MAX_LISTEN_MS = 60000; // generous — only used to refresh the audio stream periodically
+    const MIN_PEAK_FOR_SPEECH = 0.05; // absolute floor — must be louder than ambient
+    const MIN_SPEECH_DURATION_MS = 500; // sustained speech, not a single spike
     const RELATIVE_RATIO = 0.45;
-    const PEAK_DECAY = 0.985; // ~1.5% decay per 80ms tick, halves in ~2.4s
+    const PEAK_DECAY = 0.985;
     let recentPeak = 0;
     let hasSpoken = false;
+    let firstLoudTime = null;
     let lastLoudTime = null;
     const startTime = Date.now();
 
@@ -1683,23 +1807,39 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
       const now = Date.now();
       // Update decaying peak
       recentPeak = Math.max(recentPeak * PEAK_DECAY, lvl);
-      // Speech if (a) recent peak is meaningful AND (b) current >= 45% of peak
+      // Speech detection: peak must be meaningful AND current level near peak
       const speechFloor = Math.max(MIN_PEAK_FOR_SPEECH * RELATIVE_RATIO, recentPeak * RELATIVE_RATIO);
       if (recentPeak > MIN_PEAK_FOR_SPEECH && lvl >= speechFloor) {
+        if (!hasSpoken) firstLoudTime = now;
         hasSpoken = true;
         lastLoudTime = now;
       }
-      // End-of-speech: we heard speech AND have been quiet for SILENCE_DURATION_MS
-      if (hasSpoken && lastLoudTime && now - lastLoudTime > SILENCE_DURATION_MS) {
+      // True end-of-speech: had sustained speech AND now silent long enough
+      if (hasSpoken && firstLoudTime && lastLoudTime
+          && (lastLoudTime - firstLoudTime) >= MIN_SPEECH_DURATION_MS
+          && now - lastLoudTime > SILENCE_DURATION_MS) {
         clearInterval(id);
         processSpeech();
         return;
       }
-      // Total timeout — heard nothing for the whole window
-      if (!hasSpoken && now - startTime > MAX_LISTEN_MS) {
+      // False trigger: heard something briefly but it never sustained long
+      // enough to be real speech. Silently reset and keep listening — do NOT
+      // transition state, do NOT call STT.
+      if (hasSpoken && firstLoudTime && lastLoudTime
+          && (lastLoudTime - firstLoudTime) < MIN_SPEECH_DURATION_MS
+          && now - lastLoudTime > SILENCE_DURATION_MS) {
+        hasSpoken = false;
+        firstLoudTime = null;
+        lastLoudTime = null;
+        recentPeak *= 0.5; // shed memory of the spike so future ambient doesn't keep retriggering
+      }
+      // Long-running stream refresh — only used as a safety valve so the mic
+      // stream doesn't go stale during very long silent periods.
+      if (now - startTime > MAX_LISTEN_MS) {
         clearInterval(id);
         recorder.cancel();
         if (!exitingRef.current) setTurn(t => t + 1);
+        return;
       }
     }, 80);
 
@@ -1713,10 +1853,22 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
   };
 
   const processSpeech = async () => {
-    setState("thinking");
+    // Don't flip state to "thinking" yet — wait until we've confirmed the
+    // recording actually contains audio. This avoids a visible flash if the
+    // VAD fires on a brief noise spike that slipped past the duration check.
     try {
       const blob = await recorder.stop();
       if (!blob || exitingRef.current) return;
+
+      // Very short audio = noise spike that got past VAD. Skip STT entirely
+      // and quietly go back to listening — no state change visible to user.
+      // 6KB ≈ 0.2s of 16kHz mono 16-bit WAV; anything below that can't be speech.
+      if (blob.size < 6000) {
+        if (!exitingRef.current) setTurn(t => t + 1);
+        return;
+      }
+
+      setState("thinking");
 
       // STT
       const { transcript, languageCode } = await sarvamSpeechToText({
@@ -1725,7 +1877,7 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
         languageCode: voiceLang,
       });
       if (!transcript || !transcript.trim()) {
-        // Empty — go back to listening
+        // STT confirmed there's no speech — silently restart listening
         if (!exitingRef.current) setTurn(t => t + 1);
         return;
       }
@@ -1954,12 +2106,12 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
         </button>
       </div>
 
-      {/* Main split: orb left, session right */}
-      <div className="flex-1 flex min-h-0 px-6 pb-6 gap-6">
-        {/* Left — orb / state / controls */}
-        <div className="flex-1 flex flex-col items-center justify-center min-w-0">
+      {/* Main split: orb left + session right on desktop, stacked on mobile */}
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 px-4 md:px-6 pb-4 md:pb-6 gap-4 md:gap-6 overflow-hidden">
+        {/* Top (mobile) / Left (desktop) — orb / state / controls */}
+        <div className="flex flex-col items-center justify-center min-w-0 md:flex-1 py-3 md:py-0">
           {/* Orb */}
-          <div className="relative mb-8">
+          <div className="relative mb-4 md:mb-8">
             {state === "thinking" && (
               <div
                 className="absolute inset-0 rounded-full orb-thinking-rotate"
@@ -1967,7 +2119,7 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
               />
             )}
             <div
-              className={`relative w-[160px] h-[160px] rounded-full transition-transform duration-100 ease-out ${
+              className={`relative w-[120px] h-[120px] md:w-[160px] md:h-[160px] rounded-full transition-transform duration-100 ease-out ${
                 state === "speaking" ? "orb-speaking" : ""
               }`}
               style={{
@@ -1985,10 +2137,10 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
           </div>
 
           {/* State label */}
-          <div className="text-white text-[19px] font-medium mb-1 tracking-tight">
+          <div className="text-white text-[16px] md:text-[19px] font-medium mb-1 tracking-tight">
             {stateLabel}
           </div>
-          <div className="text-white/50 text-[12.5px] mb-5 max-w-sm text-center px-4">
+          <div className="text-white/50 text-[11.5px] md:text-[12.5px] mb-3 md:mb-5 max-w-sm text-center px-4">
             {state === "listening" && "Speak now — I'll respond when you pause, or tap Done."}
             {state === "thinking" && "Searching the manuals and thinking…"}
             {state === "speaking" && "Listening will resume automatically."}
@@ -2066,17 +2218,17 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
           )}
         </div>
 
-        {/* Right — live session panel */}
-        <div className="hidden md:flex w-[44%] max-w-[520px] flex-col bg-white/95 backdrop-blur rounded-2xl border border-white/10 shadow-2xl shadow-black/20 overflow-hidden">
-          <div className="px-5 py-3 border-b border-[#E5E4DF] flex items-center justify-between">
+        {/* Right (desktop) / Bottom (mobile) — live session panel */}
+        <div className="flex flex-1 md:flex-none md:w-[44%] md:max-w-[520px] flex-col bg-white/95 backdrop-blur rounded-2xl border border-white/10 shadow-2xl shadow-black/20 overflow-hidden min-h-0">
+          <div className="px-4 md:px-5 py-2.5 md:py-3 border-b border-[#E5E4DF] flex items-center justify-between flex-shrink-0">
             <div className="text-[12.5px] font-semibold text-[#0A1628]">Live session</div>
             <div className="text-[11px] text-[#64748B]">
               {messages.length === 0 ? "Waiting for first turn" : `${Math.floor(messages.filter(m => m.role === "user").length)} exchange${messages.filter(m => m.role === "user").length === 1 ? "" : "s"}`}
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4" ref={panelScrollRef}>
+          <div className="flex-1 overflow-y-auto scrollbar-thin px-3 md:px-4 py-3 md:py-4 min-h-0" ref={panelScrollRef}>
             {messages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center text-[#94A3B8] px-6">
+              <div className="h-full flex flex-col items-center justify-center text-center text-[#94A3B8] px-6 py-8">
                 <AudioLines className="w-6 h-6 mb-3 opacity-50" />
                 <div className="text-[13px]">
                   Start talking — your conversation will appear here in real time, with citations.
@@ -2099,7 +2251,7 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
       </div>
 
       {/* Bottom bar */}
-      <div className="px-6 py-5 flex items-center justify-center">
+      <div className="px-4 md:px-6 py-3 md:py-5 flex items-center justify-center flex-shrink-0">
         <button
           onClick={handleEnd}
           className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#DC2626] hover:bg-[#B91C1C] text-white rounded-full text-[13px] font-medium transition-colors shadow-lg shadow-red-900/30"
@@ -2167,6 +2319,7 @@ export default function App() {
   const [previewChunk, setPreviewChunk] = useState(null);
   const [previewDoc, setPreviewDoc] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false);
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
 
   // Used by VoiceMode to log a turn (user msg + assistant msg) into the active conversation
@@ -2221,24 +2374,24 @@ export default function App() {
   };
 
   /* ----- Image handling (click / paste / drop) ----- */
-  const ingestImageFile = useCallback(file => {
+  const ingestImageFile = useCallback(async file => {
     if (!file) return false;
     if (!file.type || !file.type.startsWith("image/")) return false;
-    // Cap image size — base64-encoded payload is ~1.33x raw, and Vercel
-    // serverless body limit is ~4.5 MB. 3 MB raw leaves comfortable headroom.
-    const MAX_IMAGE_SIZE = 3 * 1024 * 1024;
+    // 5 MB raw cap. We compress to JPEG @ 1568px max, so the actual base64
+    // payload sent to Claude stays small (~200-800 KB) regardless of input.
+    const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
     if (file.size > MAX_IMAGE_SIZE) {
-      setComposerError(`Image too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 3 MB.`);
+      setComposerError(`Image too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 5 MB.`);
       return false;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result;
-      const base64 = dataUrl.split(",")[1];
-      setPendingImage({ dataUrl, base64, mime: file.type });
-    };
-    reader.readAsDataURL(file);
-    return true;
+    try {
+      const compressed = await compressImageForVision(file);
+      setPendingImage(compressed);
+      return true;
+    } catch (e) {
+      setComposerError(`Couldn't process image: ${e.message}`);
+      return false;
+    }
   }, []);
 
   const handleImagePick = e => {
@@ -2587,25 +2740,44 @@ export default function App() {
         onToggleCollapse={() => setSidebarCollapsed(s => !s)}
         conversations={conversations}
         activeConversationId={activeConversationId}
-        onSelectConversation={handleSelectConversation}
-        onNewConversation={handleNewConversation}
+        onSelectConversation={(id) => { handleSelectConversation(id); setSidebarOpenMobile(false); }}
+        onNewConversation={() => { handleNewConversation(); setSidebarOpenMobile(false); }}
         onDeleteConversation={handleDeleteConversation}
         documents={documents}
-        onSelectDocument={setPreviewDoc}
+        onSelectDocument={(doc) => { setPreviewDoc(doc); setSidebarOpenMobile(false); }}
         onUploadManual={handleUploadManual}
         isUploading={isUploading}
         uploadError={uploadError}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => { setSettingsOpen(true); setSidebarOpenMobile(false); }}
+        mobileOpen={sidebarOpenMobile}
+        onMobileClose={() => setSidebarOpenMobile(false)}
       />
+
+      {/* Mobile backdrop — clicking it closes the drawer */}
+      {sidebarOpenMobile && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40 md:hidden"
+          onClick={() => setSidebarOpenMobile(false)}
+          aria-hidden="true"
+        />
+      )}
 
       {/* MAIN AREA */}
       <main className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="px-6 py-3.5 border-b border-[#E5E4DF]/60 bg-white/40 backdrop-blur-sm flex items-center justify-between">
-          <div className="text-[13px] font-medium text-[#0A1628] truncate flex-1">
+        <header className="px-4 md:px-6 py-3 md:py-3.5 border-b border-[#E5E4DF]/60 bg-white/40 backdrop-blur-sm flex items-center gap-3">
+          {/* Hamburger — mobile only */}
+          <button
+            onClick={() => setSidebarOpenMobile(true)}
+            className="md:hidden -ml-1 p-1.5 rounded-md text-[#0A1628] hover:bg-[#F1F5F9] transition-colors"
+            aria-label="Open menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div className="text-[13px] font-medium text-[#0A1628] truncate flex-1 min-w-0">
             {activeConversation.title === "New conversation" ? "New diagnosis" : activeConversation.title}
           </div>
-          <div className="text-[11.5px] text-[#64748B] flex items-center gap-1.5">
+          <div className="hidden sm:flex text-[11.5px] text-[#64748B] items-center gap-1.5 flex-shrink-0">
             <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]"></span>
             <span>{chunks.length} sections indexed</span>
           </div>
@@ -2613,7 +2785,7 @@ export default function App() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto scrollbar-thin">
-          <div className="max-w-3xl mx-auto px-6 py-8">
+          <div className="max-w-3xl mx-auto px-4 md:px-6 py-6 md:py-8">
             {messages.length === 0 ? (
               <EmptyState onPick={s => handleSend(s)} />
             ) : (
@@ -2644,7 +2816,7 @@ export default function App() {
 
         {/* Composer */}
         <div
-          className="px-6 pb-5 pt-3 bg-gradient-to-t from-[#F5F4F1] via-[#F5F4F1]/95 to-transparent"
+          className="px-4 md:px-6 pb-4 md:pb-5 pt-3 bg-gradient-to-t from-[#F5F4F1] via-[#F5F4F1]/95 to-transparent"
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -2729,7 +2901,7 @@ export default function App() {
                   value={pendingTranscript}
                   onChange={e => setPendingTranscript(e.target.value)}
                   rows={2}
-                  className="w-full px-2 py-1 text-[14px] bg-transparent focus:outline-none resize-none text-[#0A1628]"
+                  className="w-full px-2 py-1 text-[16px] md:text-[14px] bg-transparent focus:outline-none resize-none text-[#0A1628]"
                   autoFocus
                 />
                 <div className="flex items-center justify-end gap-2 px-2 pt-2 border-t border-[#E5E4DF]">
@@ -2766,19 +2938,20 @@ export default function App() {
                       handleSend();
                     }
                   }}
-                  placeholder={isDraggingOver ? "Drop image to attach" : "Describe the issue, paste or drop an image, speak, or attach a photo"}
+                  placeholder={isDraggingOver ? "Drop image to attach" : "Describe the issue..."}
                   disabled={isThinking}
                   rows={1}
-                  className="w-full px-4 py-3 bg-transparent text-[14.5px] focus:outline-none resize-none placeholder:text-[#94A3B8] disabled:opacity-50"
+                  className="w-full px-4 py-3 bg-transparent text-[16px] md:text-[14.5px] focus:outline-none resize-none placeholder:text-[#94A3B8] disabled:opacity-50"
                   style={{ maxHeight: 140 }}
                 />
-                <div className="flex items-center justify-between px-2 pb-2">
-                  <div className="flex items-center gap-0.5">
+                <div className="flex items-center justify-between gap-2 px-2 pb-2">
+                  <div className="flex items-center gap-0.5 min-w-0">
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       disabled={isThinking}
-                      className="p-2 text-[#5B6B85] hover:text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
+                      className="p-2.5 md:p-2 text-[#5B6B85] hover:text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
                       title="Attach image"
+                      aria-label="Attach image"
                     >
                       <ImageIcon className="w-4 h-4" />
                     </button>
@@ -2792,8 +2965,9 @@ export default function App() {
                     <button
                       onClick={handleStartRecording}
                       disabled={isThinking}
-                      className="p-2 text-[#5B6B85] hover:text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
+                      className="p-2.5 md:p-2 text-[#5B6B85] hover:text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
                       title={voiceReady ? "Voice input" : "Voice input (add Sarvam key in Settings)"}
+                      aria-label="Voice input"
                     >
                       <Mic className="w-4 h-4" />
                     </button>
@@ -2806,16 +2980,17 @@ export default function App() {
                         setVoiceModeOpen(true);
                       }}
                       disabled={isThinking}
-                      className="px-2.5 py-1.5 ml-1 inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#0A1628] hover:text-white hover:bg-[#0A1628] border border-[#E5E4DF] hover:border-[#0A1628] rounded-full transition-colors disabled:opacity-50"
+                      className="px-2.5 py-2 md:py-1.5 ml-1 inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#0A1628] hover:text-white hover:bg-[#0A1628] border border-[#E5E4DF] hover:border-[#0A1628] rounded-full transition-colors disabled:opacity-50"
                       title={voiceReady ? "Voice conversation mode" : "Voice mode (add Sarvam key in Settings)"}
+                      aria-label="Voice mode"
                     >
                       <AudioLines className="w-3.5 h-3.5" />
-                      <span>Voice mode</span>
+                      <span className="hidden sm:inline">Voice mode</span>
                     </button>
                     {voiceReady && (
                       <button
                         onClick={() => setSettingsOpen(true)}
-                        className="flex items-center gap-1 px-2 ml-1 py-0.5 text-[10.5px] font-mono text-[#64748B] hover:text-[#0A1628] hover:bg-[#F1F5F9] rounded-md transition-colors"
+                        className="hidden sm:flex items-center gap-1 px-2 ml-1 py-0.5 text-[10.5px] font-mono text-[#64748B] hover:text-[#0A1628] hover:bg-[#F1F5F9] rounded-md transition-colors"
                         title="Change voice language"
                       >
                         <Languages className="w-3 h-3" />
@@ -2826,10 +3001,11 @@ export default function App() {
                   <button
                     onClick={() => handleSend()}
                     disabled={isThinking || (!input.trim() && !pendingImage)}
-                    className="px-4 py-1.5 bg-[#0A1628] text-white rounded-full text-[13px] font-medium hover:bg-[#1E293B] transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    className="px-3 md:px-4 py-2 md:py-1.5 bg-[#0A1628] text-white rounded-full text-[13px] font-medium hover:bg-[#1E293B] transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5 flex-shrink-0"
+                    aria-label="Send"
                   >
                     {isThinking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                    <span>Diagnose</span>
+                    <span className="hidden sm:inline">Diagnose</span>
                   </button>
                 </div>
               </div>
@@ -2883,14 +3059,14 @@ function EmptyState({ onPick }) {
     "Chain slack — what's the correct adjustment?",
   ];
   return (
-    <div className="flex flex-col items-center justify-center min-h-[64vh] text-center">
-      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] flex items-center justify-center mb-6 shadow-lg shadow-blue-500/20">
-        <Wrench className="w-7 h-7 text-white" strokeWidth={2} />
+    <div className="flex flex-col items-center justify-center min-h-[64vh] text-center px-4">
+      <div className="w-12 h-12 md:w-14 md:h-14 rounded-2xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] flex items-center justify-center mb-5 md:mb-6 shadow-lg shadow-blue-500/20">
+        <Wrench className="w-6 h-6 md:w-7 md:h-7 text-white" strokeWidth={2} />
       </div>
-      <div className="font-display text-[40px] md:text-[44px] leading-[1.05] text-[#0A1628] mb-3 max-w-2xl font-bold tracking-[-0.02em]">
+      <div className="font-display text-[28px] sm:text-[36px] md:text-[44px] leading-[1.1] md:leading-[1.05] text-[#0A1628] mb-3 max-w-2xl font-bold tracking-[-0.02em]">
         What's wrong with your bike?
       </div>
-      <div className="text-[15px] text-[#475569] mb-10 max-w-md leading-relaxed">
+      <div className="text-[14px] md:text-[15px] text-[#475569] mb-8 md:mb-10 max-w-md leading-relaxed">
         Ask a question, speak it, or attach a photo. Every answer is grounded in your manual sections with verifiable citations.
       </div>
 
@@ -2899,7 +3075,7 @@ function EmptyState({ onPick }) {
           <button
             key={s}
             onClick={() => onPick(s)}
-            className="px-4 py-2 text-[12.5px] text-[#0A1628] bg-white/80 border border-[#E5E4DF] rounded-full hover:border-[#0A1628] hover:bg-[#0A1628] hover:text-white transition-all"
+            className="px-3 md:px-4 py-2 text-[12px] md:text-[12.5px] text-[#0A1628] bg-white/80 border border-[#E5E4DF] rounded-full hover:border-[#0A1628] hover:bg-[#0A1628] hover:text-white transition-all"
           >
             {s}
           </button>
