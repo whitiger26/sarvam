@@ -48,7 +48,7 @@ function ensureFonts() {
   link.id = FONT_LINK_ID;
   link.rel = "stylesheet";
   link.href =
-    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500;1,9..144,600&family=JetBrains+Mono:wght@400;500;600&display=swap";
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap";
   document.head.appendChild(link);
 }
 
@@ -392,13 +392,86 @@ async function parsePdfToChunks(file, brand = "Uploaded Manual") {
 }
 
 /* ============================================================
+   AUDIO FORMAT CONVERSION
+   Sarvam's ASR rejects audio/webm. Browsers' MediaRecorder
+   produces webm/opus by default. We decode it via Web Audio API
+   and re-encode as 16-bit PCM WAV @ 16 kHz mono — the canonical
+   ASR-friendly format.
+   ============================================================ */
+async function blobToWav16kMono(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  // Create context at 16k so decodeAudioData resamples for us
+  const ctx = new AC({ sampleRate: 16000 });
+  let audioBuffer;
+  try {
+    audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+  } catch (e) {
+    await ctx.close().catch(() => {});
+    throw new Error("Could not decode recorded audio");
+  }
+  const sampleRate = audioBuffer.sampleRate; // should be 16000 now
+  const length = audioBuffer.length;
+  const numChannels = audioBuffer.numberOfChannels;
+
+  // Mix-down to mono
+  const mono = new Float32Array(length);
+  for (let ch = 0; ch < numChannels; ch++) {
+    const data = audioBuffer.getChannelData(ch);
+    for (let i = 0; i < length; i++) mono[i] += data[i] / numChannels;
+  }
+
+  await ctx.close().catch(() => {});
+  return encodeWavPcm16(mono, sampleRate);
+}
+
+function encodeWavPcm16(samples, sampleRate) {
+  const numSamples = samples.length;
+  const dataSize = numSamples * 2;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const writeStr = (offset, s) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+
+  // RIFF header
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, "WAVE");
+  // fmt chunk
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);            // PCM chunk size
+  view.setUint16(20, 1, true);             // format = PCM
+  view.setUint16(22, 1, true);             // channels = 1 (mono)
+  view.setUint32(24, sampleRate, true);    // sample rate
+  view.setUint32(28, sampleRate * 2, true);// byte rate
+  view.setUint16(32, 2, true);             // block align
+  view.setUint16(34, 16, true);            // bits per sample
+  // data chunk
+  writeStr(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  // 16-bit PCM samples
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    offset += 2;
+  }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+/* ============================================================
    SARVAM API
    ============================================================ */
 const SARVAM_BASE = "https://api.sarvam.ai";
 
 async function sarvamSpeechToText({ audioBlob, apiKey, languageCode = "unknown" }) {
+  // Sarvam accepts only PCM/WAV/MP3. Browsers record WebM/Opus by default,
+  // so we transcode in the browser to 16 kHz mono 16-bit WAV first.
+  const wavBlob = await blobToWav16kMono(audioBlob);
   const form = new FormData();
-  form.append("file", audioBlob, "audio.webm");
+  form.append("file", wavBlob, "audio.wav");
   form.append("model", "saarika:v2.5");
   form.append("language_code", languageCode);
   const res = await fetch(`${SARVAM_BASE}/speech-to-text`, {
@@ -685,7 +758,7 @@ function Logo({ collapsed }) {
       </div>
       {!collapsed && (
         <div className="flex flex-col leading-tight">
-          <div className="font-serif italic text-[20px] text-[#0A1628] tracking-tight" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 100, 'wght' 500" }}>
+          <div className="font-display text-[16px] font-bold text-[#0A1628] tracking-tight">
             garageOS
           </div>
           <div className="text-[11px] text-[#64748B] mt-0.5">
@@ -1130,63 +1203,72 @@ function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
 }
 
 function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setVoiceLang, ttsEnabled, setTtsEnabled }) {
+  // Buffered draft — only commit to parent state when user clicks Save
+  const [draftKey, setDraftKey] = useState(sarvamKey);
+  const [draftLang, setDraftLang] = useState(voiceLang);
+  const [draftTts, setDraftTts] = useState(ttsEnabled);
+
+  // Re-sync draft when modal opens
+  useEffect(() => {
+    if (open) {
+      setDraftKey(sarvamKey);
+      setDraftLang(voiceLang);
+      setDraftTts(ttsEnabled);
+    }
+  }, [open, sarvamKey, voiceLang, ttsEnabled]);
+
   if (!open) return null;
+
+  const handleSave = () => {
+    setSarvamKey(draftKey.trim());
+    setVoiceLang(draftLang);
+    setTtsEnabled(draftTts);
+    onClose();
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-[#0A1628]/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
         className="bg-white border border-[#E5E4DF] rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-black/10"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex justify-between items-start mb-5">
-          <div>
-            <div className="font-serif text-[28px] text-[#0A1628] leading-none" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50, 'wght' 500" }}>
-              Settings
-            </div>
-            <div className="text-[12px] text-[#64748B] mt-2">Voice & language configuration</div>
+        <div className="flex justify-between items-center mb-5">
+          <div className="font-display text-[20px] text-[#0A1628] font-bold tracking-tight">
+            Settings
           </div>
           <button onClick={onClose} className="text-[#64748B] hover:text-[#0A1628]">
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="space-y-5">
+        <div className="space-y-4">
           <div>
-            <label className="block text-[12px] font-semibold text-[#0A1628] mb-1.5">
+            <label className="block text-[12.5px] font-medium text-[#0A1628] mb-1.5">
               Sarvam API key
             </label>
             <input
               type="password"
-              value={sarvamKey}
-              onChange={e => setSarvamKey(e.target.value)}
-              placeholder="Paste your key..."
+              value={draftKey}
+              onChange={e => setDraftKey(e.target.value)}
+              placeholder="Paste your key"
               className="w-full px-3 py-2 text-[13px] font-mono bg-[#FBFAF7] border border-[#E5E4DF] rounded-lg focus:outline-none focus:border-[#0A1628] focus:bg-white transition-colors"
             />
-            <div className="mt-2.5 rounded-lg bg-[#FBFAF7] border border-[#E5E4DF]/60 p-3">
-              <div className="text-[11.5px] text-[#0A1628] font-medium mb-1.5">
-                One key, three services
-              </div>
-              <div className="text-[11.5px] text-[#475569] leading-relaxed space-y-1">
-                <div className="flex gap-2"><span className="font-mono text-[10.5px] text-[#94A3B8] mt-[1px] w-[58px] flex-shrink-0">Saarika</span><span>Speech-to-text for your voice questions</span></div>
-                <div className="flex gap-2"><span className="font-mono text-[10.5px] text-[#94A3B8] mt-[1px] w-[58px] flex-shrink-0">Bulbul</span><span>Text-to-speech to read answers aloud</span></div>
-                <div className="flex gap-2"><span className="font-mono text-[10.5px] text-[#94A3B8] mt-[1px] w-[58px] flex-shrink-0">Mayura</span><span>Translation between Indic languages and English</span></div>
-              </div>
-              <div className="text-[11px] text-[#64748B] mt-2 pt-2 border-t border-[#E5E4DF]/60">
-                Sarvam uses a single subscription key for all three. Get one at <span className="font-mono text-[#0A1628]">sarvam.ai</span>.
-              </div>
-            </div>
+            <p className="text-[11.5px] text-[#64748B] mt-1.5">
+              Enables voice input and translation. Get a key at <span className="font-mono">sarvam.ai</span>.
+            </p>
           </div>
 
           <div>
-            <label className="block text-[12px] font-semibold text-[#0A1628] mb-1.5">
-              Voice input language
+            <label className="block text-[12.5px] font-medium text-[#0A1628] mb-1.5">
+              Voice language
             </label>
             <select
-              value={voiceLang}
-              onChange={e => setVoiceLang(e.target.value)}
+              value={draftLang}
+              onChange={e => setDraftLang(e.target.value)}
               className="w-full px-3 py-2 text-[13px] bg-[#FBFAF7] border border-[#E5E4DF] rounded-lg focus:outline-none focus:border-[#0A1628] focus:bg-white"
             >
               <option value="unknown">Auto-detect</option>
-              <option value="en-IN">English (India)</option>
+              <option value="en-IN">English</option>
               <option value="hi-IN">हिन्दी — Hindi</option>
               <option value="ta-IN">தமிழ் — Tamil</option>
               <option value="te-IN">తెలుగు — Telugu</option>
@@ -1199,18 +1281,30 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
             </select>
           </div>
 
-          <div className="flex items-center justify-between py-2">
-            <div>
-              <div className="text-[13px] text-[#0A1628] font-medium">Speak responses aloud</div>
-              <div className="text-[11px] text-[#64748B]">Generates audio via Bulbul (requires key)</div>
-            </div>
+          <div className="flex items-center justify-between py-1">
+            <div className="text-[13px] text-[#0A1628]">Speak responses aloud</div>
             <button
-              onClick={() => setTtsEnabled(!ttsEnabled)}
-              className={`w-10 h-5 rounded-full transition-colors relative ${ttsEnabled ? "bg-[#0A1628]" : "bg-[#E5E4DF]"}`}
+              onClick={() => setDraftTts(!draftTts)}
+              className={`w-10 h-5 rounded-full transition-colors relative ${draftTts ? "bg-[#0A1628]" : "bg-[#E5E4DF]"}`}
             >
-              <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow ${ttsEnabled ? "left-5" : "left-0.5"}`} />
+              <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow ${draftTts ? "left-5" : "left-0.5"}`} />
             </button>
           </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-6 pt-4 border-t border-[#E5E4DF]">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 text-[13px] text-[#475569] hover:text-[#0A1628] hover:bg-[#F5F4F1] rounded-full font-medium transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            className="px-4 py-1.5 bg-[#0A1628] hover:bg-[#1E293B] text-white rounded-full text-[13px] font-medium transition-colors"
+          >
+            Save
+          </button>
         </div>
       </div>
     </div>
@@ -1231,7 +1325,7 @@ function DocumentPreviewModal({ doc, onClose, onSelectChunk }) {
               <FileText className="w-5 h-5 text-[#2563EB]" />
             </div>
             <div>
-              <div className="font-serif text-[22px] text-[#0A1628] leading-tight" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50, 'wght' 500" }}>
+              <div className="font-display text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight">
                 {doc.brand}
               </div>
               <div className="text-[12px] text-[#5B6B85] mt-0.5 font-mono">
@@ -1279,7 +1373,7 @@ function ChunkPreviewModal({ chunk, onClose }) {
       >
         <div className="flex justify-between items-start mb-4">
           <div>
-            <div className="font-serif text-[22px] text-[#0A1628] leading-tight" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50, 'wght' 500" }}>
+            <div className="font-display text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight">
               {chunk.brand}
             </div>
             <div className="text-[11px] font-mono text-[#5B6B85] mt-1">
@@ -1379,6 +1473,7 @@ export default function App() {
   const [composerState, setComposerState] = useState("idle");
   const [pendingTranscript, setPendingTranscript] = useState("");
   const [pendingLang, setPendingLang] = useState("");
+  const [composerError, setComposerError] = useState("");
 
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1478,6 +1573,7 @@ export default function App() {
 
   /* ----- Voice flow ----- */
   const handleStartRecording = async () => {
+    setComposerError("");
     if (!sarvamKey) {
       setSettingsOpen(true);
       return;
@@ -1487,11 +1583,12 @@ export default function App() {
       setComposerState("recording");
     } catch (e) {
       console.error(e);
-      alert("Microphone access denied. Please allow microphone permission.");
+      setComposerError("Microphone access denied. Allow microphone permission in your browser to use voice input.");
     }
   };
 
   const handleStopRecording = async () => {
+    setComposerError("");
     setComposerState("transcribing");
     try {
       const blob = await recorder.stop();
@@ -1505,6 +1602,7 @@ export default function App() {
         languageCode: voiceLang,
       });
       if (!transcript || transcript.trim().length === 0) {
+        setComposerError("No speech detected. Try again and speak clearly.");
         setComposerState("idle");
         return;
       }
@@ -1513,7 +1611,13 @@ export default function App() {
       setComposerState("transcript_ready");
     } catch (e) {
       console.error(e);
-      alert(`Transcription failed: ${e.message}`);
+      const msg = String(e.message || e);
+      // Friendly messages for common cases
+      let friendly = "Transcription failed. Please try again.";
+      if (/401|403/.test(msg)) friendly = "Sarvam key is invalid or out of credits. Update it in Settings.";
+      else if (/decode/i.test(msg)) friendly = "Could not process recorded audio. Try again.";
+      else if (/network|fetch/i.test(msg)) friendly = "Network error reaching Sarvam. Check your connection.";
+      setComposerError(friendly);
       setComposerState("idle");
     }
   };
@@ -1523,6 +1627,7 @@ export default function App() {
     setComposerState("idle");
     setPendingTranscript("");
     setPendingLang("");
+    setComposerError("");
   };
 
   const handleSendTranscript = () => {
@@ -1531,6 +1636,7 @@ export default function App() {
     setPendingTranscript("");
     setPendingLang("");
     setComposerState("idle");
+    setComposerError("");
     if (t) handleSend(t, { detectedLang: lang });
   };
 
@@ -1721,8 +1827,8 @@ export default function App() {
       }}
     >
       <style>{`
-        .font-display { font-family: 'Fraunces', 'Inter', Georgia, serif; font-variation-settings: 'opsz' 96, 'SOFT' 100; letter-spacing: -0.015em; }
-        .font-serif   { font-family: 'Fraunces', 'Inter', Georgia, serif; font-variation-settings: 'opsz' 144, 'SOFT' 50; }
+        .font-display { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-feature-settings: 'cv11', 'ss01', 'ss03'; }
+        .font-serif   { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-feature-settings: 'cv11', 'ss01', 'ss03'; }
         .font-mono    { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
         .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
         .scrollbar-thin::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
@@ -1810,6 +1916,18 @@ export default function App() {
           onDrop={handleDrop}
         >
           <div className="max-w-3xl mx-auto">
+            {composerError && (
+              <div className="mb-2 flex items-start gap-2 bg-[#FEF2F2] border border-[#FECACA] rounded-lg px-3 py-2.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-[#DC2626] mt-0.5 flex-shrink-0" />
+                <div className="text-[12.5px] text-[#991B1B] leading-snug flex-1">{composerError}</div>
+                <button
+                  onClick={() => setComposerError("")}
+                  className="text-[#991B1B]/60 hover:text-[#991B1B] flex-shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             {pendingImage && composerState === "idle" && (
               <div className="mb-2 inline-flex items-center gap-2 bg-white border border-[#E5E4DF] rounded-lg p-1.5 pr-3">
                 <img src={pendingImage.dataUrl} className="w-10 h-10 object-cover rounded" />
@@ -2006,14 +2124,8 @@ function EmptyState({ onPick }) {
       <div className="text-[12.5px] text-[#475569] mb-4 tracking-wide" style={{ letterSpacing: "0.02em" }}>
         Manual-grounded motorcycle diagnosis
       </div>
-      <div
-        className="font-serif text-[52px] md:text-[58px] leading-[1.02] text-[#0A1628] mb-3 max-w-3xl"
-        style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50, 'wght' 450", letterSpacing: "-0.025em" }}
-      >
-        What's wrong with{" "}
-        <span className="italic" style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50, 'wght' 400" }}>
-          your bike?
-        </span>
+      <div className="font-display text-[40px] md:text-[44px] leading-[1.05] text-[#0A1628] mb-3 max-w-2xl font-bold tracking-[-0.02em]">
+        What's wrong with your bike?
       </div>
       <div className="text-[15px] text-[#475569] mb-10 max-w-md leading-relaxed">
         Ask a question, speak it, or attach a photo. Every answer is grounded in your manual sections with verifiable citations.
