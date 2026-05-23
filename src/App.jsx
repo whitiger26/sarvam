@@ -26,6 +26,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ArrowRight,
+  AudioLines,
+  PhoneOff,
 } from "lucide-react";
 
 /* ============================================================
@@ -623,6 +625,25 @@ function buildUserMessage({ question, retrieved }) {
   return `MANUAL EXCERPTS:\n\n${excerpts}\n\n---\n\nUSER QUESTION: ${question}`;
 }
 
+/* Voice-mode prompt: response will be spoken via TTS, so it must be
+   short, conversational, and free of markdown / citation markers. */
+function buildVoiceModeSystemPrompt() {
+  return `You are a friendly motorcycle assistant having a SPOKEN PHONE CONVERSATION. Your response will be read aloud to the user via text-to-speech.
+
+CRITICAL rules:
+1. Keep responses VERY SHORT — 2 to 4 sentences total. Talk like a phone call, not a lecture.
+2. NO markdown. NO bullets. NO headings (## or ###). NO citation markers like [1].
+3. Speak in plain natural sentences. No lists.
+4. Answer using ONLY the manual excerpts provided. The excerpts may be from a different bike — general principles often apply across motorcycles, briefly say so when relevant.
+5. If no excerpt covers the topic at all, say something like: "I don't have that in your manuals — best to check with a service center."
+6. For safety-critical issues (brakes, fuel, fire, hot engine), include a one-sentence recommendation to see a mechanic.
+7. NEVER invent specific part numbers, torques, or specs. If not in excerpts, say you don't have that detail.
+
+Do NOT output a ===FOLLOWUPS=== section. This is voice mode.
+
+Plain text only. Your output goes directly to a TTS engine.`;
+}
+
 function parseAnswerAndFollowups(raw) {
   const idx = raw.indexOf("===FOLLOWUPS===");
   if (idx === -1) return { answer: raw.trim(), followups: [] };
@@ -642,6 +663,7 @@ function parseAnswerAndFollowups(raw) {
 function useAudioRecorder() {
   const [isRecording, setIsRecording] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  const audioLevelRef = useRef(0);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
@@ -652,6 +674,7 @@ function useAudioRecorder() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = null;
     setAudioLevel(0);
+    audioLevelRef.current = 0;
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
@@ -675,7 +698,9 @@ function useAudioRecorder() {
     const tick = () => {
       analyser.getByteFrequencyData(data);
       const avg = data.reduce((s, v) => s + v, 0) / data.length;
-      setAudioLevel(Math.min(1, (avg / 255) * 1.6));
+      const lvl = Math.min(1, (avg / 255) * 1.6);
+      audioLevelRef.current = lvl;
+      setAudioLevel(lvl);
       rafRef.current = requestAnimationFrame(tick);
     };
     tick();
@@ -721,7 +746,7 @@ function useAudioRecorder() {
     setIsRecording(false);
   };
 
-  return { isRecording, audioLevel, start, stop, cancel };
+  return { isRecording, audioLevel, audioLevelRef, start, stop, cancel };
 }
 
 /* ============================================================
@@ -1419,6 +1444,376 @@ function AudioLevelMeter({ level }) {
 }
 
 /* ============================================================
+   VOICE MODE — hands-free continuous conversation
+   ============================================================ */
+function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
+  // state: connecting | listening | thinking | speaking | error
+  const [state, setState] = useState("connecting");
+  const [userTranscript, setUserTranscript] = useState("");
+  const [assistantText, setAssistantText] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const recorder = useAudioRecorder();
+  const audioElRef = useRef(null);
+  const exitingRef = useRef(false);
+  const stateRef = useRef(state);
+  useEffect(() => { stateRef.current = state; }, [state]);
+
+  // Auto-loop trigger: this ref counts loop iterations; bumping it
+  // re-runs the listen → process effect chain.
+  const [turn, setTurn] = useState(0);
+
+  // Begin listening when component mounts or a new turn starts
+  useEffect(() => {
+    if (exitingRef.current) return;
+    let cancelled = false;
+
+    (async () => {
+      if (!sarvamKey) {
+        setErrorMsg("Sarvam API key required. Add one in Settings.");
+        setState("error");
+        return;
+      }
+      try {
+        setUserTranscript("");
+        setAssistantText("");
+        await recorder.start();
+        if (cancelled || exitingRef.current) {
+          recorder.cancel();
+          return;
+        }
+        setState("listening");
+      } catch (e) {
+        console.error(e);
+        setErrorMsg("Microphone permission denied. Allow access and try again.");
+        setState("error");
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [turn, sarvamKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Voice Activity Detection while listening
+  useEffect(() => {
+    if (state !== "listening") return;
+    const SPEECH_THRESHOLD = 0.05;
+    const SILENCE_DURATION_MS = 1400;
+    let hasSpoken = false;
+    let lastSpeechTime = null;
+    const startTime = Date.now();
+    const MAX_LISTEN_MS = 15000; // hard cap so we never hang on dead silence
+
+    const id = setInterval(() => {
+      if (exitingRef.current || stateRef.current !== "listening") {
+        clearInterval(id);
+        return;
+      }
+      const lvl = recorder.audioLevelRef.current;
+      if (lvl > SPEECH_THRESHOLD) {
+        hasSpoken = true;
+        lastSpeechTime = Date.now();
+      }
+      const elapsed = Date.now() - startTime;
+      if (hasSpoken && lastSpeechTime && Date.now() - lastSpeechTime > SILENCE_DURATION_MS) {
+        clearInterval(id);
+        processSpeech();
+      } else if (!hasSpoken && elapsed > MAX_LISTEN_MS) {
+        // Silence the whole time — bail and reset listening
+        clearInterval(id);
+        recorder.cancel();
+        if (!exitingRef.current) setTurn(t => t + 1);
+      }
+    }, 80);
+
+    return () => clearInterval(id);
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const processSpeech = async () => {
+    setState("thinking");
+    try {
+      const blob = await recorder.stop();
+      if (!blob || exitingRef.current) return;
+
+      // STT
+      const { transcript, languageCode } = await sarvamSpeechToText({
+        audioBlob: blob,
+        apiKey: sarvamKey,
+        languageCode: voiceLang,
+      });
+      if (!transcript || !transcript.trim()) {
+        // Empty — go back to listening
+        if (!exitingRef.current) setTurn(t => t + 1);
+        return;
+      }
+      setUserTranscript(transcript);
+
+      // Translate to English for retrieval if needed
+      let retrievalQuery = transcript;
+      if (languageCode && languageCode !== "en-IN" && languageCode !== "unknown") {
+        try {
+          retrievalQuery = await sarvamTranslate({
+            text: transcript,
+            apiKey: sarvamKey,
+            sourceLang: languageCode,
+            targetLang: "en-IN",
+          });
+        } catch (e) {
+          console.warn("Query translation failed, using original:", e);
+        }
+      }
+
+      // Retrieve
+      const retrieved = index.search(retrievalQuery, 4);
+      const topScore = retrieved[0]?.score || 0;
+
+      let answer;
+      let refused = false;
+      if (retrieved.length === 0 || topScore < 0.04) {
+        answer = "I don't have that in your manuals. Best to check with a service center.";
+        refused = true;
+      } else {
+        const raw = await callClaude({
+          system: buildVoiceModeSystemPrompt(),
+          userText: buildUserMessage({ question: transcript, retrieved }),
+        });
+        // Strip any stray markdown / citation markers / followups section
+        answer = raw
+          .replace(/===FOLLOWUPS===[\s\S]*$/, "")
+          .replace(/\[\d+\]/g, "")
+          .replace(/\*\*([^*]+)\*\*/g, "$1")
+          .replace(/^#{1,6}\s+/gm, "")
+          .replace(/^[-*]\s+/gm, "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+      if (exitingRef.current) return;
+      setAssistantText(answer);
+
+      // Log to chat history
+      addExchange(
+        { role: "user", text: transcript, detectedLang: languageCode, voiceMode: true },
+        { role: "assistant", text: answer, retrieved: refused ? [] : retrieved, confidence: topScore, refused, voiceMode: true }
+      );
+
+      // Speak
+      await speak(answer, languageCode);
+    } catch (e) {
+      console.error(e);
+      const msg = String(e.message || e);
+      let friendly = "Something went wrong. Try again.";
+      if (/401|403/.test(msg)) friendly = "Sarvam key invalid or out of credits.";
+      else if (/network|fetch/i.test(msg)) friendly = "Network error. Check your connection.";
+      setErrorMsg(friendly);
+      setState("error");
+    }
+  };
+
+  const speak = async (text, langCode) => {
+    setState("speaking");
+    try {
+      const ttsLang = langCode && langCode !== "unknown" ? langCode : "en-IN";
+      let toSpeak = text;
+      if (ttsLang !== "en-IN") {
+        try {
+          toSpeak = await sarvamTranslate({
+            text,
+            apiKey: sarvamKey,
+            sourceLang: "en-IN",
+            targetLang: ttsLang,
+          });
+        } catch (e) { console.warn("Reply translation failed:", e); }
+      }
+      const url = await sarvamTextToSpeech({
+        text: toSpeak.slice(0, 500),
+        apiKey: sarvamKey,
+        targetLang: ttsLang,
+      });
+      if (exitingRef.current) return;
+      const audio = new Audio(url);
+      audioElRef.current = audio;
+      const onDone = () => {
+        audioElRef.current = null;
+        if (!exitingRef.current) setTurn(t => t + 1);
+      };
+      audio.onended = onDone;
+      audio.onerror = onDone;
+      await audio.play();
+    } catch (e) {
+      console.warn("TTS failed:", e);
+      // No audio output — pause briefly so the user can read, then loop
+      setTimeout(() => {
+        if (!exitingRef.current) setTurn(t => t + 1);
+      }, 2200);
+    }
+  };
+
+  const handleEnd = () => {
+    exitingRef.current = true;
+    recorder.cancel();
+    if (audioElRef.current) {
+      try { audioElRef.current.pause(); } catch {}
+      audioElRef.current = null;
+    }
+    onClose();
+  };
+
+  // Unmount cleanup
+  useEffect(() => {
+    return () => {
+      exitingRef.current = true;
+      try { recorder.cancel(); } catch {}
+      if (audioElRef.current) {
+        try { audioElRef.current.pause(); } catch {}
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Orb visual: scale modulated by mic level when listening; rhythmic pulse otherwise
+  const orbScale =
+    state === "listening" ? 1 + recorder.audioLevel * 0.35 :
+    state === "speaking"  ? 1 :
+    state === "thinking"  ? 1 : 1;
+  const orbGlow =
+    state === "listening" ? 40 + recorder.audioLevel * 140 :
+    state === "speaking"  ? 80 :
+    state === "thinking"  ? 60 : 40;
+
+  const stateLabel = {
+    connecting: "Connecting…",
+    listening: "Listening",
+    thinking: "Thinking…",
+    speaking: "Speaking",
+    error: "Error",
+  }[state];
+
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col"
+      style={{
+        background: `
+          radial-gradient(ellipse 900px 600px at 50% 30%,
+            rgba(59, 130, 246, 0.18) 0%,
+            rgba(29, 78, 216, 0.10) 35%,
+            rgba(10, 22, 40, 0) 70%
+          ),
+          linear-gradient(180deg, #0A1628 0%, #060D1A 100%)
+        `,
+      }}
+    >
+      <style>{`
+        @keyframes orb-pulse-speak {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.06); }
+        }
+        @keyframes orb-spin {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        .orb-speaking { animation: orb-pulse-speak 0.9s ease-in-out infinite; }
+        .orb-thinking-rotate {
+          background: conic-gradient(from 0deg, #3B82F6, #8B5CF6, #3B82F6, #8B5CF6, #3B82F6);
+          animation: spin-conic 2.5s linear infinite;
+        }
+        @keyframes spin-conic {
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
+
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-6 py-4">
+        <div className="flex items-center gap-2 text-white/70">
+          <AudioLines className="w-4 h-4" />
+          <span className="text-[12.5px] font-medium tracking-wide">Voice mode</span>
+        </div>
+        <button
+          onClick={handleEnd}
+          className="text-white/50 hover:text-white text-[12px] uppercase tracking-wider"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+
+      {/* Center stage */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6">
+        {/* Orb */}
+        <div className="relative mb-10">
+          {state === "thinking" && (
+            <div
+              className="absolute inset-0 rounded-full orb-thinking-rotate"
+              style={{ filter: "blur(20px)", opacity: 0.5 }}
+            />
+          )}
+          <div
+            className={`relative w-[180px] h-[180px] rounded-full transition-transform duration-100 ease-out ${
+              state === "speaking" ? "orb-speaking" : ""
+            }`}
+            style={{
+              transform: `scale(${orbScale})`,
+              background: state === "thinking"
+                ? "radial-gradient(circle at 30% 30%, #60A5FA 0%, #2563EB 40%, #1E3A8A 80%, #0A1628 100%)"
+                : state === "speaking"
+                ? "radial-gradient(circle at 30% 30%, #34D399 0%, #10B981 40%, #047857 80%, #064E3B 100%)"
+                : state === "error"
+                ? "radial-gradient(circle at 30% 30%, #F87171 0%, #DC2626 50%, #7F1D1D 90%)"
+                : "radial-gradient(circle at 30% 30%, #93C5FD 0%, #3B82F6 40%, #1E40AF 80%, #0A1628 100%)",
+              boxShadow: `0 0 ${orbGlow}px ${state === "speaking" ? "rgba(16, 185, 129, 0.55)" : state === "error" ? "rgba(220, 38, 38, 0.5)" : "rgba(59, 130, 246, 0.55)"}, inset -10px -20px 40px rgba(0,0,0,0.4)`,
+            }}
+          />
+        </div>
+
+        {/* State label */}
+        <div className="text-white text-[20px] font-medium mb-1 tracking-tight">
+          {stateLabel}
+        </div>
+        <div className="text-white/50 text-[12.5px] mb-10 max-w-md text-center">
+          {state === "listening" && "Just speak — I'll respond when you pause."}
+          {state === "thinking" && "Searching the manuals and thinking…"}
+          {state === "speaking" && "Listening will resume automatically."}
+          {state === "connecting" && "Setting up the mic…"}
+          {state === "error" && errorMsg}
+        </div>
+
+        {/* Captions */}
+        <div className="w-full max-w-xl space-y-3">
+          {userTranscript && (
+            <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-3">
+              <div className="text-[10.5px] uppercase tracking-wider text-white/40 mb-1">You said</div>
+              <div className="text-[14.5px] text-white/90 leading-relaxed">{userTranscript}</div>
+            </div>
+          )}
+          {assistantText && (
+            <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-3">
+              <div className="text-[10.5px] uppercase tracking-wider text-white/40 mb-1">Reply</div>
+              <div className="text-[14.5px] text-white/90 leading-relaxed">{assistantText}</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom bar */}
+      <div className="px-6 py-6 flex items-center justify-center">
+        {state === "error" ? (
+          <button
+            onClick={() => setTurn(t => t + 1)}
+            className="px-5 py-2.5 bg-white text-[#0A1628] rounded-full text-[13px] font-medium hover:bg-white/90 transition-colors mr-2"
+          >
+            Try again
+          </button>
+        ) : null}
+        <button
+          onClick={handleEnd}
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#DC2626] hover:bg-[#B91C1C] text-white rounded-full text-[13px] font-medium transition-colors shadow-lg shadow-red-900/30"
+        >
+          <PhoneOff className="w-3.5 h-3.5" />
+          End voice
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+/* ============================================================
    MAIN APP
    ============================================================ */
 export default function App() {
@@ -1468,6 +1863,12 @@ export default function App() {
   const [previewChunk, setPreviewChunk] = useState(null);
   const [previewDoc, setPreviewDoc] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
+
+  // Used by VoiceMode to log a turn (user msg + assistant msg) into the active conversation
+  const addVoiceExchange = useCallback((userMsg, assistantMsg) => {
+    setMessages(prev => [...prev, userMsg, assistantMsg]);
+  }, [setMessages]);
 
   // Composer state machine: idle | recording | transcribing | transcript_ready
   const [composerState, setComposerState] = useState("idle");
@@ -2062,6 +2463,21 @@ export default function App() {
                     >
                       <Mic className="w-4 h-4" />
                     </button>
+                    <button
+                      onClick={() => {
+                        if (!sarvamKey) {
+                          setSettingsOpen(true);
+                          return;
+                        }
+                        setVoiceModeOpen(true);
+                      }}
+                      disabled={isThinking}
+                      className="px-2.5 py-1.5 ml-1 inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#0A1628] hover:text-white hover:bg-[#0A1628] border border-[#E5E4DF] hover:border-[#0A1628] rounded-full transition-colors disabled:opacity-50"
+                      title={sarvamKey ? "Voice conversation mode" : "Voice mode (add Sarvam key in Settings)"}
+                    >
+                      <AudioLines className="w-3.5 h-3.5" />
+                      <span>Voice mode</span>
+                    </button>
                     {sarvamKey && (
                       <div className="flex items-center gap-1 px-2 ml-1 text-[10px] font-mono text-[#94A3B8]">
                         <Languages className="w-3 h-3" />
@@ -2105,6 +2521,16 @@ export default function App() {
       />
 
       <ChunkPreviewModal chunk={previewChunk} onClose={() => setPreviewChunk(null)} />
+
+      {voiceModeOpen && (
+        <VoiceMode
+          onClose={() => setVoiceModeOpen(false)}
+          index={index}
+          sarvamKey={sarvamKey}
+          voiceLang={voiceLang}
+          addExchange={addVoiceExchange}
+        />
+      )}
     </div>
   );
 }
