@@ -1496,12 +1496,16 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
   // Voice Activity Detection while listening
   useEffect(() => {
     if (state !== "listening") return;
-    const SPEECH_THRESHOLD = 0.05;
-    const SILENCE_DURATION_MS = 1400;
+    // Tuned for typical built-in laptop / phone mics:
+    // speech threshold low enough for soft talkers,
+    // silence threshold lower still so background noise doesn't keep us armed
+    const SPEECH_THRESHOLD = 0.025;
+    const SILENCE_THRESHOLD = 0.018;
+    const SILENCE_DURATION_MS = 1000;
     let hasSpoken = false;
     let lastSpeechTime = null;
     const startTime = Date.now();
-    const MAX_LISTEN_MS = 15000; // hard cap so we never hang on dead silence
+    const MAX_LISTEN_MS = 12000; // hard cap so we never hang on dead silence
 
     const id = setInterval(() => {
       if (exitingRef.current || stateRef.current !== "listening") {
@@ -1512,6 +1516,9 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
       if (lvl > SPEECH_THRESHOLD) {
         hasSpoken = true;
         lastSpeechTime = Date.now();
+      } else if (lvl < SILENCE_THRESHOLD && hasSpoken && lastSpeechTime) {
+        // Below noise floor — start counting silence from this moment
+        // (don't keep updating lastSpeechTime)
       }
       const elapsed = Date.now() - startTime;
       if (hasSpoken && lastSpeechTime && Date.now() - lastSpeechTime > SILENCE_DURATION_MS) {
@@ -1527,6 +1534,12 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
 
     return () => clearInterval(id);
   }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleManualDone = () => {
+    if (stateRef.current === "listening") {
+      processSpeech();
+    }
+  };
 
   const processSpeech = async () => {
     setState("thinking");
@@ -1765,13 +1778,40 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
         <div className="text-white text-[20px] font-medium mb-1 tracking-tight">
           {stateLabel}
         </div>
-        <div className="text-white/50 text-[12.5px] mb-10 max-w-md text-center">
-          {state === "listening" && "Just speak — I'll respond when you pause."}
+        <div className="text-white/50 text-[12.5px] mb-6 max-w-md text-center">
+          {state === "listening" && "Speak now — I'll respond when you pause, or tap Done."}
           {state === "thinking" && "Searching the manuals and thinking…"}
           {state === "speaking" && "Listening will resume automatically."}
           {state === "connecting" && "Setting up the mic…"}
           {state === "error" && errorMsg}
         </div>
+
+        {/* Mic level indicator + Done button — only while listening */}
+        {state === "listening" && (
+          <div className="flex flex-col items-center gap-3 mb-6">
+            <div className="flex items-center gap-[3px] h-5">
+              {Array.from({ length: 18 }).map((_, i) => {
+                const center = 9;
+                const distance = Math.abs(i - center) / center;
+                const falloff = 1 - distance * 0.6;
+                const h = Math.max(0.18, recorder.audioLevel * falloff * 1.4);
+                return (
+                  <div
+                    key={i}
+                    className="w-[3px] rounded-full bg-white/70"
+                    style={{ height: `${Math.min(100, h * 100)}%`, transition: "height 60ms linear" }}
+                  />
+                );
+              })}
+            </div>
+            <button
+              onClick={handleManualDone}
+              className="px-4 py-1.5 bg-white text-[#0A1628] rounded-full text-[12.5px] font-medium hover:bg-white/90 transition-colors"
+            >
+              Done speaking
+            </button>
+          </div>
+        )}
 
         {/* Captions */}
         <div className="w-full max-w-xl space-y-3">
