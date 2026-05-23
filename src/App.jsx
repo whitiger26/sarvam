@@ -1031,6 +1031,7 @@ function renderMarkdown(text, retrieved, onCitationClick) {
 }
 
 
+function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
   if (msg.role === "user") {
     return (
       <div className="flex justify-end mb-6">
