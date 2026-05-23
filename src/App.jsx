@@ -466,6 +466,11 @@ function encodeWavPcm16(samples, sampleRate) {
 /* ============================================================
    SARVAM API
    ============================================================ */
+// When true, all Sarvam calls go through same-origin /api/sarvam-* proxies
+// (deployed mode — server-side key, no browser exposure). When false, calls
+// go direct to api.sarvam.ai with the user-supplied key from Settings.
+// Build script flips this to true for the deployed bundle.
+const SARVAM_USE_PROXY = true;
 const SARVAM_BASE = "https://api.sarvam.ai";
 
 async function sarvamSpeechToText({ audioBlob, apiKey, languageCode = "unknown" }) {
@@ -476,11 +481,9 @@ async function sarvamSpeechToText({ audioBlob, apiKey, languageCode = "unknown" 
   form.append("file", wavBlob, "audio.wav");
   form.append("model", "saarika:v2.5");
   form.append("language_code", languageCode);
-  const res = await fetch(`${SARVAM_BASE}/speech-to-text`, {
-    method: "POST",
-    headers: { "api-subscription-key": apiKey },
-    body: form,
-  });
+  const url = SARVAM_USE_PROXY ? "/api/sarvam-stt" : `${SARVAM_BASE}/speech-to-text`;
+  const headers = SARVAM_USE_PROXY ? {} : { "api-subscription-key": apiKey };
+  const res = await fetch(url, { method: "POST", headers, body: form });
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(`ASR ${res.status}: ${txt.slice(0, 200)}`);
@@ -493,12 +496,12 @@ async function sarvamSpeechToText({ audioBlob, apiKey, languageCode = "unknown" 
 }
 
 async function sarvamTranslate({ text, apiKey, sourceLang, targetLang }) {
-  const res = await fetch(`${SARVAM_BASE}/translate`, {
+  const url = SARVAM_USE_PROXY ? "/api/sarvam-translate" : `${SARVAM_BASE}/translate`;
+  const headers = { "Content-Type": "application/json" };
+  if (!SARVAM_USE_PROXY) headers["api-subscription-key"] = apiKey;
+  const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "api-subscription-key": apiKey,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       input: text,
       source_language_code: sourceLang,
@@ -515,12 +518,12 @@ async function sarvamTranslate({ text, apiKey, sourceLang, targetLang }) {
 }
 
 async function sarvamTextToSpeech({ text, apiKey, targetLang = "en-IN", speaker = "anushka" }) {
-  const res = await fetch(`${SARVAM_BASE}/text-to-speech`, {
+  const url = SARVAM_USE_PROXY ? "/api/sarvam-tts" : `${SARVAM_BASE}/text-to-speech`;
+  const headers = { "Content-Type": "application/json" };
+  if (!SARVAM_USE_PROXY) headers["api-subscription-key"] = apiKey;
+  const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "api-subscription-key": apiKey,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       text,
       target_language_code: targetLang,
@@ -536,6 +539,45 @@ async function sarvamTextToSpeech({ text, apiKey, targetLang = "en-IN", speaker 
   const audioB64 = data.audios?.[0];
   if (!audioB64) throw new Error("No audio returned");
   return `data:audio/wav;base64,${audioB64}`;
+}
+
+/* TTS engines like Bulbul read "TVS" as one word ("tvs"). Spell out common
+   motorcycle acronyms letter-by-letter so they sound natural. Whitelist
+   approach — pattern-matching all-caps would wrongly split legitimate
+   emphasis like "WHITE SMOKE". */
+const TTS_ACRONYMS = [
+  "TVS", "EFI", "ECU", "MIL", "DTS", "RTR", "ABS", "MAP", "NGK", "RPM",
+  "PSI", "MF", "JASO", "DTC", "OEM", "BS6", "BS4", "BHP", "BTU", "DCT",
+  "DOHC", "SOHC", "OHC", "OHV", "TPMS", "EBC", "DOT", "MPG", "KMPL",
+  "MAF", "CDI", "AGM", "USB", "LED", "VIN",
+];
+function expandAcronymsForTts(text) {
+  let out = text;
+  for (const acr of TTS_ACRONYMS) {
+    // Use word boundaries so we don't break larger words containing the letters
+    out = out.replace(new RegExp(`\\b${acr}\\b`, "g"), acr.split("").join(" "));
+  }
+  return out;
+}
+
+/* Persistent storage helpers. Used for the Sarvam API key, voice language,
+   and TTS toggle so users don't have to re-enter on every reload. Wrapped
+   in try/catch — Claude.ai's artifact preview blocks localStorage, in which
+   case these silently no-op (session-only state, as before). Works normally
+   on any deployed site. */
+function readStored(key, fallback = "") {
+  try {
+    if (typeof window === "undefined") return fallback;
+    const v = window.localStorage?.getItem(key);
+    return v === null || v === undefined ? fallback : v;
+  } catch { return fallback; }
+}
+function writeStored(key, value) {
+  try {
+    if (typeof window === "undefined") return;
+    if (value === "" || value == null) window.localStorage?.removeItem(key);
+    else window.localStorage?.setItem(key, String(value));
+  } catch {}
 }
 
 /* ============================================================
@@ -842,12 +884,9 @@ function Logo({ collapsed }) {
         <Wrench className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
       </div>
       {!collapsed && (
-        <div className="flex flex-col leading-tight">
+        <div className="flex flex-col leading-tight justify-center">
           <div className="font-display text-[16px] font-bold text-[#0A1628] tracking-tight">
             garageOS
-          </div>
-          <div className="text-[11px] text-[#64748B] mt-0.5">
-            Manual-grounded answers
           </div>
         </div>
       )}
@@ -1305,9 +1344,13 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
   if (!open) return null;
 
   const handleSave = () => {
-    setSarvamKey(draftKey.trim());
+    const trimmedKey = draftKey.trim();
+    setSarvamKey(trimmedKey);
     setVoiceLang(draftLang);
     setTtsEnabled(draftTts);
+    writeStored("garageos.sarvam_key", trimmedKey);
+    writeStored("garageos.voice_lang", draftLang);
+    writeStored("garageos.tts_enabled", draftTts ? "true" : "false");
     onClose();
   };
 
@@ -1327,21 +1370,30 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
         </div>
 
         <div className="space-y-4">
-          <div>
-            <label className="block text-[12.5px] font-medium text-[#0A1628] mb-1.5">
-              Sarvam API key
-            </label>
-            <input
-              type="password"
-              value={draftKey}
-              onChange={e => setDraftKey(e.target.value)}
-              placeholder="Paste your key"
-              className="w-full px-3 py-2 text-[13px] font-mono bg-[#FBFAF7] border border-[#E5E4DF] rounded-lg focus:outline-none focus:border-[#0A1628] focus:bg-white transition-colors"
-            />
-            <p className="text-[11.5px] text-[#64748B] mt-1.5">
-              Enables voice input and translation. Get a key at <span className="font-mono">sarvam.ai</span>.
-            </p>
-          </div>
+          {SARVAM_USE_PROXY ? (
+            <div className="rounded-lg bg-[#F0F9FF] border border-[#BFDBFE] p-3">
+              <div className="text-[12.5px] text-[#0A1628] font-medium mb-0.5">Voice services ready</div>
+              <div className="text-[11.5px] text-[#475569] leading-relaxed">
+                Sarvam (voice input, voice output, and translation) is configured by the host. No key needed.
+              </div>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-[12.5px] font-medium text-[#0A1628] mb-1.5">
+                Sarvam API key
+              </label>
+              <input
+                type="password"
+                value={draftKey}
+                onChange={e => setDraftKey(e.target.value)}
+                placeholder="Paste your key"
+                className="w-full px-3 py-2 text-[13px] font-mono bg-[#FBFAF7] border border-[#E5E4DF] rounded-lg focus:outline-none focus:border-[#0A1628] focus:bg-white transition-colors"
+              />
+              <p className="text-[11.5px] text-[#64748B] mt-1.5">
+                Enables voice input and translation. Get a key at <span className="font-mono">sarvam.ai</span>.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-[12.5px] font-medium text-[#0A1628] mb-1.5">
@@ -1536,7 +1588,7 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
     let cancelled = false;
 
     (async () => {
-      if (!sarvamKey) {
+      if (!SARVAM_USE_PROXY && !sarvamKey) {
         setErrorMsg("Sarvam API key required. Add one in Settings.");
         setState("error");
         return;
@@ -1723,6 +1775,8 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
           });
         } catch (e) { console.warn("Reply translation failed:", e); }
       }
+      // Spell out motorcycle acronyms (TVS, EFI, ECU, …) for natural speech
+      toSpeak = expandAcronymsForTts(toSpeak);
       const url = await sarvamTextToSpeech({
         text: toSpeak.slice(0, 500),
         apiKey: sarvamKey,
@@ -1996,9 +2050,13 @@ export default function App() {
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingStage, setThinkingStage] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [sarvamKey, setSarvamKey] = useState("");
-  const [voiceLang, setVoiceLang] = useState("unknown");
-  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [sarvamKey, setSarvamKey] = useState(() => readStored("garageos.sarvam_key", ""));
+  const [voiceLang, setVoiceLang] = useState(() => readStored("garageos.voice_lang", "unknown"));
+  const [ttsEnabled, setTtsEnabled] = useState(() => readStored("garageos.tts_enabled", "false") === "true");
+
+  // True if Sarvam is callable — either the server proxy handles auth, or
+  // the user has supplied their own browser-side key.
+  const voiceReady = SARVAM_USE_PROXY || !!sarvamKey;
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [previewChunk, setPreviewChunk] = useState(null);
@@ -2030,6 +2088,11 @@ export default function App() {
     setIsUploading(true);
     setUploadError("");
     try {
+      const MAX_PDF_SIZE = 15 * 1024 * 1024; // 15 MB
+      if (file.size > MAX_PDF_SIZE) {
+        setUploadError(`File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 15 MB.`);
+        return;
+      }
       const lower = file.name.toLowerCase();
       let brand = file.name.replace(/\.pdf$/i, "");
       if (lower.includes("royal") || lower.includes("enfield")) brand = "Royal Enfield (uploaded)";
@@ -2056,6 +2119,13 @@ export default function App() {
   const ingestImageFile = useCallback(file => {
     if (!file) return false;
     if (!file.type || !file.type.startsWith("image/")) return false;
+    // Cap image size — base64-encoded payload is ~1.33x raw, and Vercel
+    // serverless body limit is ~4.5 MB. 3 MB raw leaves comfortable headroom.
+    const MAX_IMAGE_SIZE = 3 * 1024 * 1024;
+    if (file.size > MAX_IMAGE_SIZE) {
+      setComposerError(`Image too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 3 MB.`);
+      return false;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
@@ -2116,7 +2186,7 @@ export default function App() {
   /* ----- Voice flow ----- */
   const handleStartRecording = async () => {
     setComposerError("");
-    if (!sarvamKey) {
+    if (!voiceReady) {
       setSettingsOpen(true);
       return;
     }
@@ -2208,7 +2278,7 @@ export default function App() {
       let retrievalQuery = text;
 
       // 1. Translate non-English voice transcripts to English first
-      if (detectedLang && detectedLang !== "en-IN" && detectedLang !== "unknown" && sarvamKey) {
+      if (detectedLang && detectedLang !== "en-IN" && detectedLang !== "unknown" && voiceReady) {
         setThinkingStage("Translating to English for retrieval...");
         try {
           retrievalQuery = await sarvamTranslate({
@@ -2293,7 +2363,7 @@ export default function App() {
         followups: refused ? [] : followups,
       };
 
-      if (ttsEnabled && sarvamKey && !refused) {
+      if (ttsEnabled && voiceReady && !refused) {
         setThinkingStage("Generating voice response...");
         try {
           const plain = answer.replace(/\[\d+\]/g, "").trim();
@@ -2307,6 +2377,8 @@ export default function App() {
               targetLang: ttsLang,
             });
           }
+          // Spell out motorcycle acronyms (TVS, EFI, ECU, …) for natural speech
+          toSpeak = expandAcronymsForTts(toSpeak);
           const url = await sarvamTextToSpeech({
             text: toSpeak.slice(0, 500),
             apiKey: sarvamKey,
@@ -2615,13 +2687,13 @@ export default function App() {
                       onClick={handleStartRecording}
                       disabled={isThinking}
                       className="p-2 text-[#5B6B85] hover:text-[#2563EB] hover:bg-[#EFF6FF] rounded-lg transition-colors disabled:opacity-50"
-                      title={sarvamKey ? "Voice input" : "Voice input (add Sarvam key in Settings)"}
+                      title={voiceReady ? "Voice input" : "Voice input (add Sarvam key in Settings)"}
                     >
                       <Mic className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => {
-                        if (!sarvamKey) {
+                        if (!voiceReady) {
                           setSettingsOpen(true);
                           return;
                         }
@@ -2629,12 +2701,12 @@ export default function App() {
                       }}
                       disabled={isThinking}
                       className="px-2.5 py-1.5 ml-1 inline-flex items-center gap-1.5 text-[11.5px] font-medium text-[#0A1628] hover:text-white hover:bg-[#0A1628] border border-[#E5E4DF] hover:border-[#0A1628] rounded-full transition-colors disabled:opacity-50"
-                      title={sarvamKey ? "Voice conversation mode" : "Voice mode (add Sarvam key in Settings)"}
+                      title={voiceReady ? "Voice conversation mode" : "Voice mode (add Sarvam key in Settings)"}
                     >
                       <AudioLines className="w-3.5 h-3.5" />
                       <span>Voice mode</span>
                     </button>
-                    {sarvamKey && (
+                    {voiceReady && (
                       <div className="flex items-center gap-1 px-2 ml-1 text-[10px] font-mono text-[#94A3B8]">
                         <Languages className="w-3 h-3" />
                         <span>{voiceLang === "unknown" ? "auto" : voiceLang}</span>
@@ -2704,9 +2776,6 @@ function EmptyState({ onPick }) {
     <div className="flex flex-col items-center justify-center min-h-[64vh] text-center">
       <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] flex items-center justify-center mb-6 shadow-lg shadow-blue-500/20">
         <Wrench className="w-7 h-7 text-white" strokeWidth={2} />
-      </div>
-      <div className="text-[12.5px] text-[#475569] mb-4 tracking-wide" style={{ letterSpacing: "0.02em" }}>
-        Manual-grounded motorcycle diagnosis
       </div>
       <div className="font-display text-[40px] md:text-[44px] leading-[1.05] text-[#0A1628] mb-3 max-w-2xl font-bold tracking-[-0.02em]">
         What's wrong with your bike?
