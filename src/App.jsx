@@ -30,9 +30,7 @@ import {
   PhoneOff,
 } from "lucide-react";
 
-/* ============================================================
-   FONTS — Inter + JetBrains Mono. No Roboto, no Google Sans.
-   ============================================================ */
+
 const FONT_LINK_ID = "bta-fonts";
 function ensureFonts() {
   if (typeof document === "undefined") return;
