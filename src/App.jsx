@@ -541,7 +541,7 @@ async function sarvamTextToSpeech({ text, apiKey, targetLang = "en-IN", speaker 
 /* ============================================================
    CLAUDE
    ============================================================ */
-async function callClaude({ system, userText, imageBase64, imageMime }) {
+async function callClaude({ system, userText, imageBase64, imageMime, history = [] }) {
   const userContent = [];
   if (imageBase64) {
     userContent.push({
@@ -555,6 +555,9 @@ async function callClaude({ system, userText, imageBase64, imageMime }) {
   }
   userContent.push({ type: "text", text: userText });
 
+  // history is already in Anthropic API format: [{role, content}, ...]
+  const messages = [...history, { role: "user", content: userContent }];
+
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -562,7 +565,7 @@ async function callClaude({ system, userText, imageBase64, imageMime }) {
       model: "claude-sonnet-4-6",
       max_tokens: 1200,
       system,
-      messages: [{ role: "user", content: userContent }],
+      messages,
     }),
   });
   if (!res.ok) {
@@ -573,6 +576,60 @@ async function callClaude({ system, userText, imageBase64, imageMime }) {
   return data.content.map(c => (c.type === "text" ? c.text : "")).join("").trim();
 }
 
+/* Build conversation history in Anthropic API format from the local messages
+   array. We strip citation markers and FOLLOWUPS sections from assistant
+   text so the model isn't confused by stale [N] references that pointed to
+   a different set of excerpts in an earlier turn. Refused turns are dropped
+   — they're not useful context, just dead ends. Cap to recent turns to keep
+   the token budget bounded. */
+function buildConversationHistory(messages, maxTurns = 3) {
+  const useful = messages.filter(m => !m.refused);
+  const recent = useful.slice(-(maxTurns * 2));
+  return recent.map(m => {
+    let content = m.text || "";
+    if (m.role === "assistant") {
+      content = content
+        .replace(/===FOLLOWUPS===[\s\S]*$/, "")
+        .replace(/\[\d+\]/g, "")
+        .trim();
+    }
+    if (content.length > 1200) content = content.slice(0, 1200) + "...";
+    return { role: m.role, content };
+  });
+}
+
+/* Use Claude itself to rewrite a follow-up question as a standalone query
+   suitable for keyword retrieval. Critical for follow-ups like "next steps"
+   or "tell me more" — without this, retrieval would return weak/no matches
+   and the pipeline would refuse. */
+async function rewriteFollowUpQuery(question, history) {
+  if (!history || history.length === 0) return question;
+  const ctx = history
+    .map(m => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n\n");
+  const prompt = `Conversation so far:
+${ctx}
+
+User's new message: "${question}"
+
+If the new message depends on the conversation context above (uses pronouns like "it", "this", "that", or refers to "next steps", "more details", "the same issue", etc.), rewrite it as a standalone, self-contained question that includes the necessary context from the prior turns. Keep it under 25 words. If the message is already standalone, return it unchanged.
+
+Output ONLY the rewritten question. No preamble, no quotes, no explanation.`;
+  try {
+    const rewritten = await callClaude({
+      system: "You rewrite follow-up motorcycle questions as standalone search queries. Output ONLY the rewritten question text.",
+      userText: prompt,
+    });
+    const cleaned = (rewritten || question)
+      .replace(/^["'`\s]+|["'`\s]+$/g, "")
+      .trim();
+    return cleaned.slice(0, 250) || question;
+  } catch (e) {
+    console.warn("Query rewrite failed, falling back to original:", e);
+    return question;
+  }
+}
+
 /* ============================================================
    PROMPTS
    ============================================================ */
@@ -580,26 +637,28 @@ const REFUSAL_PHRASE =
   "I couldn't find this in the loaded manual sections. Please consult your authorized service center or upload additional manual pages covering this topic.";
 
 function buildSystemPrompt() {
-  return `You are a motorcycle troubleshooting assistant. Follow these rules:
+  return `You are a motorcycle troubleshooting assistant in an ongoing conversation. The user message you see may be part of a multi-turn exchange — earlier turns appear above as conversation history. Use that context. Follow these rules:
 
-1. Answer using the MANUAL EXCERPTS provided in the user message. The excerpts may come from a DIFFERENT motorcycle model than the user's bike. That is okay — general motorcycle troubleshooting principles (engine diagnosis, electrical, brakes, exhaust smoke colors, cold-start behaviour, charging system voltages, etc.) typically apply across brands and models. When you apply principles from a different model's manual, briefly say so, e.g., "Based on general principles from the [Brand] service manual..." or "The same diagnosis applies broadly to most motorcycles..."
+1. Answer using the MANUAL EXCERPTS provided in the user message AND your earlier turns in this conversation. The excerpts may come from a DIFFERENT motorcycle model than the user's bike. That is okay — general motorcycle troubleshooting principles (engine diagnosis, electrical, brakes, exhaust smoke colors, cold-start behaviour, charging system voltages, etc.) typically apply across brands and models. When you apply principles from a different model's manual, briefly say so, e.g., "Based on general principles from the [Brand] service manual..." or "The same diagnosis applies broadly to most motorcycles..."
 
-2. Only refuse if the excerpts do not cover the topic AT ALL — not even broadly. In that case, reply with EXACTLY this sentence and nothing else:
+2. If the user is asking a follow-up like "next steps", "tell me more", "what should I check first", treat it as a continuation of the prior topic. Do NOT ask them to repeat themselves.
+
+3. Only refuse if the excerpts AND prior conversation do not cover the topic at all. In that case, reply with EXACTLY this sentence and nothing else:
 "${REFUSAL_PHRASE}"
 
-3. Cite every factual claim with [N] markers matching excerpt numbers. Multiple citations like [1][3] are fine. Cite generously.
+4. Cite every factual claim with [N] markers matching excerpt numbers. Multiple citations like [1][3] are fine. Cite generously.
 
-4. WRITE CONVERSATIONALLY. Use flowing prose, not a hierarchical document. Avoid headings (## or ###) unless the response genuinely covers multiple distinct topics; usually you do NOT need any headings. Use **bold** sparingly for the single most important phrase. Use - bullets only when listing 3+ short parallel items. Default to plain paragraphs.
+5. WRITE CONVERSATIONALLY. Use flowing prose, not a hierarchical document. Avoid headings (## or ###) unless the response genuinely covers multiple distinct topics; usually you do NOT need any headings. Use **bold** sparingly for the single most important phrase. Use - bullets only when listing 3+ short parallel items. Default to plain paragraphs.
 
-5. Be concise. Lead with the most likely cause. Aim for 4–8 sentences for typical questions; only go longer when the user explicitly needs a multi-step procedure.
+6. Be concise. Lead with the most likely cause. Aim for 4–8 sentences for typical questions; only go longer when the user explicitly needs a multi-step procedure.
 
-6. For safety-critical issues (brakes, fuel leaks, electrical fires, hot engine, fuel system), include a brief safety note recommending professional service.
+7. For safety-critical issues (brakes, fuel leaks, electrical fires, hot engine, fuel system), include a brief safety note recommending professional service.
 
-7. If an image is provided, briefly describe what you observe (one line) before answering.
+8. If an image is provided, briefly describe what you observe (one line) before answering.
 
-8. Never invent specific part numbers, torque values, jet sizes, or model-specific specs. Use only values present in the excerpts. If a spec isn't in the excerpts for the user's bike, say "consult your model's specifications" rather than guessing.
+9. Never invent specific part numbers, torque values, jet sizes, or model-specific specs. Use only values present in the excerpts. If a spec isn't in the excerpts for the user's bike, say "consult your model's specifications" rather than guessing.
 
-9. AFTER your answer, on a new line, write exactly: ===FOLLOWUPS===
+10. AFTER your answer, on a new line, write exactly: ===FOLLOWUPS===
 Then output 3 short follow-up questions THE USER might naturally ask you next (one per line, no bullets/numbering, max 10 words each). Write them in FIRST PERSON from the user's perspective — as if the user is typing them to you. They should be the user's *next questions*, NOT questions you are asking the user.
   GOOD examples (user-voiced, user wants you to answer):
     "How do I check for worn piston rings?"
@@ -628,16 +687,17 @@ function buildUserMessage({ question, retrieved }) {
 /* Voice-mode prompt: response will be spoken via TTS, so it must be
    short, conversational, and free of markdown / citation markers. */
 function buildVoiceModeSystemPrompt() {
-  return `You are a friendly motorcycle assistant having a SPOKEN PHONE CONVERSATION. Your response will be read aloud to the user via text-to-speech.
+  return `You are a friendly motorcycle assistant having a SPOKEN PHONE CONVERSATION. Your response will be read aloud to the user via text-to-speech. This is a multi-turn conversation — earlier turns may appear above as conversation history. Use that context naturally.
 
 CRITICAL rules:
 1. Keep responses VERY SHORT — 2 to 4 sentences total. Talk like a phone call, not a lecture.
 2. NO markdown. NO bullets. NO headings (## or ###). NO citation markers like [1].
 3. Speak in plain natural sentences. No lists.
-4. Answer using ONLY the manual excerpts provided. The excerpts may be from a different bike — general principles often apply across motorcycles, briefly say so when relevant.
-5. If no excerpt covers the topic at all, say something like: "I don't have that in your manuals — best to check with a service center."
-6. For safety-critical issues (brakes, fuel, fire, hot engine), include a one-sentence recommendation to see a mechanic.
-7. NEVER invent specific part numbers, torques, or specs. If not in excerpts, say you don't have that detail.
+4. Answer using ONLY the manual excerpts provided AND your prior turns in this conversation. If the user asks a follow-up like "what's next" or "and then?", continue the prior topic naturally — do NOT ask them to start over.
+5. The excerpts may be from a different bike — general principles often apply across motorcycles, briefly say so when relevant.
+6. If no excerpt covers the topic at all, say something like: "I don't have that in your manuals — best to check with a service center."
+7. For safety-critical issues (brakes, fuel, fire, hot engine), include a one-sentence recommendation to see a mechanic.
+8. NEVER invent specific part numbers, torques, or specs. If not in excerpts, say you don't have that detail.
 
 Do NOT output a ===FOLLOWUPS=== section. This is voice mode.
 
@@ -1575,6 +1635,11 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
       }
       setUserTranscript(transcript);
 
+      // Build conversation history from messages prop (active conversation,
+      // including any prior voice or text turns). Capture BEFORE adding
+      // this turn's exchange so it represents only "what came before".
+      const history = buildConversationHistory(messages, 3);
+
       // Translate to English for retrieval if needed
       let retrievalQuery = transcript;
       if (languageCode && languageCode !== "en-IN" && languageCode !== "unknown") {
@@ -1590,6 +1655,12 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
         }
       }
 
+      // Rewrite query if there's prior context (so retrieval finds the right chunks
+      // even for follow-ups like "what's the next step?")
+      if (history.length > 0) {
+        retrievalQuery = await rewriteFollowUpQuery(retrievalQuery, history);
+      }
+
       // Retrieve
       const retrieved = index.search(retrievalQuery, 4);
       const topScore = retrieved[0]?.score || 0;
@@ -1603,6 +1674,7 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
         const raw = await callClaude({
           system: buildVoiceModeSystemPrompt(),
           userText: buildUserMessage({ question: transcript, retrieved }),
+          history,
         });
         // Strip any stray markdown / citation markers / followups section
         answer = raw
@@ -2117,6 +2189,10 @@ export default function App() {
     const image = pendingImage;
     const detectedLang = opts.detectedLang;
 
+    // Capture conversation history BEFORE appending the new user message,
+    // so Claude sees prior turns as context but not its own pending input.
+    const history = buildConversationHistory(messages, 3);
+
     const userMsg = {
       role: "user",
       text: text || "(image attached)",
@@ -2130,6 +2206,8 @@ export default function App() {
 
     try {
       let retrievalQuery = text;
+
+      // 1. Translate non-English voice transcripts to English first
       if (detectedLang && detectedLang !== "en-IN" && detectedLang !== "unknown" && sarvamKey) {
         setThinkingStage("Translating to English for retrieval...");
         try {
@@ -2144,6 +2222,14 @@ export default function App() {
         }
       }
 
+      // 2. If we have prior conversation, rewrite the query to be standalone
+      //    so retrieval actually works on follow-ups like "next steps".
+      if (history.length > 0) {
+        setThinkingStage("Understanding context...");
+        retrievalQuery = await rewriteFollowUpQuery(retrievalQuery, history);
+      }
+
+      // 3. If image attached, get a one-line visual symptom description
       let visionHint = "";
       if (image) {
         setThinkingStage("Analysing image...");
@@ -2192,6 +2278,7 @@ export default function App() {
         userText: userPrompt,
         imageBase64: image?.base64,
         imageMime: image?.mime,
+        history,
       });
 
       const { answer, followups } = parseAnswerAndFollowups(rawAnswer);
