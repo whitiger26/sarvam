@@ -1720,6 +1720,31 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
   const [voiceImage, setVoiceImage] = useState(null); // {dataUrl, base64, mime}
   useEffect(() => { stateRef.current = state; }, [state]);
 
+  // iOS audio unlock: iOS Safari and iOS Chrome (both WebKit) require
+  // HTMLAudioElement.play() to be initiated inside a user-gesture context.
+  // The user's tap on "Voice mode" IS such a gesture, and this effect runs
+  // synchronously from that tap. We prime the audio element here with a
+  // 44-byte silent WAV (data URL below) so subsequent .play() calls — which
+  // happen many seconds later after STT/LLM/TTS round-trips, far outside
+  // the original gesture window — are allowed by iOS.
+  useEffect(() => {
+    const audio = audioElRef.current;
+    if (!audio) return;
+    audio.setAttribute("playsinline", "");
+    audio.setAttribute("webkit-playsinline", "");
+    try {
+      // Silent zero-length PCM WAV
+      audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+      audio.muted = true;
+      const p = audio.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => { audio.muted = false; }).catch(() => { audio.muted = false; });
+      } else {
+        audio.muted = false;
+      }
+    } catch {}
+  }, []);
+
   const handleImagePick = async e => {
     const f = e.target.files?.[0];
     e.target.value = "";
@@ -2007,15 +2032,30 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
         targetLang: ttsLang,
       });
       if (exitingRef.current) return;
-      const audio = new Audio(url);
-      audioElRef.current = audio;
+
+      // Reuse the persistent audio element — was already "unlocked" on mount
+      // from the user gesture that opened voice mode. iOS will allow this
+      // play() even outside a fresh gesture context.
+      const audio = audioElRef.current;
       const onDone = () => {
-        audioElRef.current = null;
         if (!exitingRef.current) setTurn(t => t + 1);
       };
+      if (!audio) {
+        // Defensive fallback — shouldn't happen, but keep the loop alive.
+        setTimeout(onDone, 1800);
+        return;
+      }
       audio.onended = onDone;
       audio.onerror = onDone;
-      await audio.play();
+      audio.src = url;
+      try {
+        await audio.play();
+      } catch (e) {
+        // iOS rejects silently when audio is locked — keep the conversation
+        // moving rather than stalling on a "speaking" state forever.
+        console.warn("Audio play blocked:", e);
+        setTimeout(onDone, 1800);
+      }
     } catch (e) {
       console.warn("TTS failed:", e);
       // No audio output — pause briefly so the user can read, then loop
@@ -2030,7 +2070,7 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
     recorder.cancel();
     if (audioElRef.current) {
       try { audioElRef.current.pause(); } catch {}
-      audioElRef.current = null;
+      // Don't null — element belongs to a JSX ref, will be cleaned by unmount
     }
     onClose();
   };
@@ -2260,6 +2300,11 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages
           End voice
         </button>
       </div>
+
+      {/* Persistent audio element for TTS playback. Primed with silent audio
+          on mount (inside the user-gesture context of opening voice mode) so
+          iOS allows subsequent .play() calls outside that gesture window. */}
+      <audio ref={audioElRef} preload="auto" style={{ display: "none" }} />
     </div>
   );
 }
