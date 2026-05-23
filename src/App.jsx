@@ -19,6 +19,7 @@ import {
   BookOpen,
   Plus,
   MessageSquare,
+  MessageSquarePlus,
   Square,
   Check,
   Pencil,
@@ -479,8 +480,6 @@ async function callClaude({ system, userText, imageBase64, imageMime }) {
   }
   userContent.push({ type: "text", text: userText });
 
-  // Calls our own serverless function at /api/claude — which adds the
-  // ANTHROPIC_API_KEY server-side. The key never reaches the browser.
   const res = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -515,16 +514,28 @@ function buildSystemPrompt() {
 
 3. Cite every factual claim with [N] markers matching excerpt numbers. Multiple citations like [1][3] are fine. Cite generously.
 
-4. Be concise. Use short paragraphs or bullet points. Lead with the most likely cause.
+4. WRITE CONVERSATIONALLY. Use flowing prose, not a hierarchical document. Avoid headings (## or ###) unless the response genuinely covers multiple distinct topics; usually you do NOT need any headings. Use **bold** sparingly for the single most important phrase. Use - bullets only when listing 3+ short parallel items. Default to plain paragraphs.
 
-5. For safety-critical issues (brakes, fuel leaks, electrical fires, hot engine, fuel system), include a brief safety note recommending professional service.
+5. Be concise. Lead with the most likely cause. Aim for 4–8 sentences for typical questions; only go longer when the user explicitly needs a multi-step procedure.
 
-6. If an image is provided, briefly describe what you observe (one line) before answering.
+6. For safety-critical issues (brakes, fuel leaks, electrical fires, hot engine, fuel system), include a brief safety note recommending professional service.
 
-7. Never invent specific part numbers, torque values, jet sizes, or model-specific specs. Use only values present in the excerpts. If a spec isn't in the excerpts for the user's bike, say "consult your model's specifications" rather than guessing.
+7. If an image is provided, briefly describe what you observe (one line) before answering.
 
-8. AFTER your answer, on a new line, write exactly: ===FOLLOWUPS===
-Then output 3 short follow-up questions a user might naturally ask next (one per line, no bullets/numbering, max 9 words each). Make them grounded in the excerpts and conversation. If you used the refusal phrase, do NOT output the FOLLOWUPS section.
+8. Never invent specific part numbers, torque values, jet sizes, or model-specific specs. Use only values present in the excerpts. If a spec isn't in the excerpts for the user's bike, say "consult your model's specifications" rather than guessing.
+
+9. AFTER your answer, on a new line, write exactly: ===FOLLOWUPS===
+Then output 3 short follow-up questions THE USER might naturally ask you next (one per line, no bullets/numbering, max 10 words each). Write them in FIRST PERSON from the user's perspective — as if the user is typing them to you. They should be the user's *next questions*, NOT questions you are asking the user.
+  GOOD examples (user-voiced, user wants you to answer):
+    "How do I check for worn piston rings?"
+    "Can I ride safely with this issue?"
+    "What does a head gasket replacement cost?"
+    "How often should I service my chain?"
+  BAD examples (these are YOU asking the user — do NOT output these):
+    "Is the smoke white, blue, or black?"
+    "Does the warning light stay on?"
+    "What color is the smoke?"
+If you used the refusal phrase, do NOT output the FOLLOWUPS section.
 
 Format the answer as plain text with [N] citation markers inline. Do not add a "Sources:" section — the UI renders citations separately.`;
 }
@@ -669,16 +680,16 @@ const groupChunksByDocument = (chunks) => {
 function Logo({ collapsed }) {
   return (
     <div className="flex items-center gap-2.5">
-      <div className="relative w-8 h-8 rounded-lg bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] flex items-center justify-center shadow-sm shadow-blue-500/20">
-        <Wrench className="w-4 h-4 text-white" strokeWidth={2.5} />
+      <div className="relative w-9 h-9 rounded-xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] flex items-center justify-center shadow-md shadow-blue-500/25">
+        <Wrench className="w-[18px] h-[18px] text-white" strokeWidth={2.5} />
       </div>
       {!collapsed && (
-        <div className="flex flex-col leading-none">
+        <div className="flex flex-col leading-tight">
           <div className="font-display text-[16px] font-bold text-[#0A1628] tracking-tight">
             garageOS
           </div>
-          <div className="text-[9px] font-mono uppercase tracking-[0.16em] text-[#5B6B85] mt-1">
-            Manual-grounded
+          <div className="text-[11px] text-[#64748B] mt-0.5">
+            Manual-grounded answers
           </div>
         </div>
       )}
@@ -709,25 +720,39 @@ function Sidebar({
         collapsed ? "w-[56px]" : "w-[280px]"
       }`}
     >
-      {/* Logo & collapse */}
-      <div className={`flex items-center justify-between p-3 ${collapsed ? "px-2" : "px-4"}`}>
-        <Logo collapsed={collapsed} />
-        <button
-          onClick={onToggleCollapse}
-          className="text-[#5B6B85] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
-          title={collapsed ? "Expand" : "Collapse"}
-        >
-          {collapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
-        </button>
-      </div>
+      {/* Logo & collapse toggle */}
+      {collapsed ? (
+        <div className="flex flex-col items-center gap-2 pt-3 pb-2">
+          <Logo collapsed={true} />
+          <button
+            onClick={onToggleCollapse}
+            className="text-[#64748B] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
+            title="Expand sidebar"
+          >
+            <PanelLeftOpen className="w-4 h-4" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between px-4 pt-4 pb-2">
+          <Logo collapsed={false} />
+          <button
+            onClick={onToggleCollapse}
+            className="text-[#64748B] hover:text-[#0A1628] hover:bg-[#EFF6FF] p-1.5 rounded-md transition-colors"
+            title="Collapse sidebar"
+          >
+            <PanelLeftClose className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* New chat */}
-      <div className={`${collapsed ? "px-2" : "px-3"} pt-1 pb-3`}>
+      <div className={`${collapsed ? "px-2" : "px-3"} pt-2 pb-3`}>
         <button
           onClick={onNewConversation}
-          className={`w-full flex items-center ${collapsed ? "justify-center" : "justify-start gap-2"} bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-lg ${collapsed ? "h-9 w-9 mx-auto" : "px-3 py-2"} text-[13px] font-medium transition-colors shadow-sm shadow-blue-500/10`}
+          className={`w-full flex items-center ${collapsed ? "justify-center h-10 w-10 mx-auto" : "justify-start gap-2 px-3 py-2.5"} bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] hover:from-[#2563EB] hover:to-[#1E40AF] text-white rounded-lg text-[13px] font-medium transition-all shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30`}
+          title={collapsed ? "New chat" : undefined}
         >
-          <Plus className="w-4 h-4 flex-shrink-0" strokeWidth={2.5} />
+          <MessageSquarePlus className="w-4 h-4 flex-shrink-0" strokeWidth={2.25} />
           {!collapsed && <span>New chat</span>}
         </button>
       </div>
@@ -735,7 +760,7 @@ function Sidebar({
       {/* Conversations */}
       {!collapsed && (
         <div className="px-3 pb-2">
-          <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#94A3B8] px-1.5 mb-1.5">
+          <div className="text-[10.5px] font-semibold text-[#94A3B8] px-1.5 mb-1.5 uppercase tracking-wide" style={{ letterSpacing: "0.04em" }}>
             Chats
           </div>
           <div className="space-y-0.5 max-h-[30vh] overflow-y-auto scrollbar-thin">
@@ -748,7 +773,7 @@ function Sidebar({
                   onClick={() => onSelectConversation(c.id)}
                   className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-[12.5px] ${
                     c.id === activeConversationId
-                      ? "bg-[#EFF6FF] text-[#1D4ED8] font-medium"
+                      ? "bg-gradient-to-r from-[#EFF6FF] to-[#DBEAFE] text-[#1D4ED8] font-medium"
                       : "text-[#0A1628]/80 hover:bg-[#EFF6FF]/60"
                   }`}
                 >
@@ -760,7 +785,7 @@ function Sidebar({
                         e.stopPropagation();
                         onDeleteConversation(c.id);
                       }}
-                      className="opacity-0 group-hover:opacity-100 text-[#5B6B85] hover:text-[#DC2626] transition-opacity"
+                      className="opacity-0 group-hover:opacity-100 text-[#64748B] hover:text-[#DC2626] transition-opacity"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
@@ -775,24 +800,24 @@ function Sidebar({
       <div className={`${collapsed ? "px-2" : "px-3"} mt-2 border-t border-[#E2E8F0] pt-3`}>
         {!collapsed && (
           <div className="flex items-center justify-between px-1.5 mb-2">
-            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#94A3B8]">
+            <div className="text-[10.5px] font-semibold text-[#94A3B8] uppercase tracking-wide" style={{ letterSpacing: "0.04em" }}>
               Manuals
             </div>
-            <span className="text-[10px] font-mono text-[#94A3B8]">{documents.length}</span>
+            <span className="text-[10.5px] text-[#94A3B8]">{documents.length}</span>
           </div>
         )}
 
-        {/* Upload — prominent dashed area */}
+        {/* Upload — prominent dashed gradient */}
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={isUploading}
-          className={`w-full ${collapsed ? "h-9 px-0 justify-center" : "px-3 py-2.5 justify-center"} flex items-center gap-2 border-2 border-dashed border-[#BFDBFE] hover:border-[#2563EB] bg-[#EFF6FF]/40 hover:bg-[#EFF6FF] text-[#2563EB] hover:text-[#1D4ED8] rounded-lg text-[12.5px] font-medium transition-colors disabled:opacity-50`}
+          className={`w-full ${collapsed ? "h-10 w-10 mx-auto justify-center" : "px-3 py-2.5 justify-center"} flex items-center gap-2 border-2 border-dashed border-[#93C5FD] hover:border-[#2563EB] bg-gradient-to-br from-[#EFF6FF] to-[#DBEAFE]/60 hover:from-[#DBEAFE] hover:to-[#BFDBFE]/80 text-[#1D4ED8] hover:text-[#1E3A8A] rounded-lg text-[12.5px] font-medium transition-all disabled:opacity-50`}
           title="Upload manual PDF"
         >
           {isUploading ? (
             <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
           ) : (
-            <Upload className="w-4 h-4 flex-shrink-0" />
+            <Upload className="w-4 h-4 flex-shrink-0" strokeWidth={2.25} />
           )}
           {!collapsed && <span>{isUploading ? "Indexing..." : "Upload manual"}</span>}
         </button>
@@ -895,7 +920,117 @@ function CitationCard({ n, chunk, onClick }) {
   );
 }
 
-function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
+/* ------------------------------------------------------------
+   Lightweight markdown renderer for assistant messages.
+   Handles: ## h2, ### h3, **bold**, - bullets, [N] citation pills.
+   Citation pills must work inside any block (paragraph / heading / list item).
+   ------------------------------------------------------------ */
+function renderInlineMd(text, retrieved, onCitationClick) {
+  if (!text) return null;
+  // Strip stray heading hashes that escape into prose (e.g. when a line begins with #)
+  // and tokenize on **bold** and [N] markers.
+  const re = /(\*\*[^*\n]+\*\*|\[\d+\])/g;
+  const out = [];
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) out.push({ kind: "t", v: text.slice(last, m.index) });
+    const tok = m[0];
+    if (tok.startsWith("**")) {
+      out.push({ kind: "b", v: tok.slice(2, -2) });
+    } else {
+      const n = parseInt(tok.slice(1, -1), 10);
+      out.push({ kind: "c", n });
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) out.push({ kind: "t", v: text.slice(last) });
+
+  return out.map((p, i) => {
+    if (p.kind === "t") return <span key={i}>{p.v}</span>;
+    if (p.kind === "b") return <strong key={i} className="font-semibold text-[#0A1628]">{p.v}</strong>;
+    const chunk = retrieved?.[p.n - 1]?.chunk;
+    if (chunk) return <CitationPill key={i} n={p.n} chunk={chunk} onClick={() => onCitationClick(chunk)} />;
+    return <span key={i}>[{p.n}]</span>;
+  });
+}
+
+function renderMarkdown(text, retrieved, onCitationClick) {
+  if (!text) return null;
+  const lines = text.split("\n");
+  const blocks = [];
+  let list = null;
+  const flushList = () => {
+    if (list) {
+      blocks.push({ kind: "ul", items: list });
+      list = null;
+    }
+  };
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/, "");
+    if (line.trim() === "") {
+      flushList();
+      continue;
+    }
+    const h3 = line.match(/^###\s+(.+)$/);
+    if (h3) {
+      flushList();
+      blocks.push({ kind: "h3", text: h3[1] });
+      continue;
+    }
+    const h2 = line.match(/^##\s+(.+)$/);
+    if (h2) {
+      flushList();
+      blocks.push({ kind: "h2", text: h2[1] });
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      if (!list) list = [];
+      list.push(bullet[1]);
+      continue;
+    }
+    flushList();
+    blocks.push({ kind: "p", text: line });
+  }
+  flushList();
+
+  return blocks.map((b, i) => {
+    if (b.kind === "h2") {
+      return (
+        <h3 key={i} className="text-[16.5px] font-semibold text-[#0A1628] mt-5 mb-2 first:mt-0">
+          {renderInlineMd(b.text, retrieved, onCitationClick)}
+        </h3>
+      );
+    }
+    if (b.kind === "h3") {
+      return (
+        <h4 key={i} className="text-[14.5px] font-semibold text-[#0A1628] mt-4 mb-1.5 first:mt-0">
+          {renderInlineMd(b.text, retrieved, onCitationClick)}
+        </h4>
+      );
+    }
+    if (b.kind === "ul") {
+      return (
+        <ul key={i} className="space-y-1.5 my-2.5">
+          {b.items.map((it, j) => (
+            <li key={j} className="flex gap-2.5 leading-[1.65]">
+              <span className="text-[#2563EB] flex-shrink-0 select-none mt-[1px]">•</span>
+              <span className="flex-1">{renderInlineMd(it, retrieved, onCitationClick)}</span>
+            </li>
+          ))}
+        </ul>
+      );
+    }
+    return (
+      <p key={i} className="my-2 leading-[1.65] first:mt-0 last:mb-0">
+        {renderInlineMd(b.text, retrieved, onCitationClick)}
+      </p>
+    );
+  });
+}
+
+
   if (msg.role === "user") {
     return (
       <div className="flex justify-end mb-6">
@@ -919,21 +1054,7 @@ function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
     );
   }
 
-  const renderText = (text, retrieved) => {
-    if (!text) return null;
-    const parts = text.split(/(\[\d+\])/g);
-    return parts.map((p, i) => {
-      const m = p.match(/^\[(\d+)\]$/);
-      if (m) {
-        const n = parseInt(m[1], 10);
-        const chunk = retrieved?.[n - 1]?.chunk;
-        if (chunk) {
-          return <CitationPill key={i} n={n} chunk={chunk} onClick={() => onCitationClick(retrieved[n - 1].chunk)} />;
-        }
-      }
-      return <span key={i}>{p}</span>;
-    });
-  };
+  const body = renderMarkdown(msg.text, msg.retrieved, onCitationClick);
 
   return (
     <div className="flex justify-start mb-6">
@@ -942,26 +1063,26 @@ function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
           <div className="w-5 h-5 rounded-md bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] flex items-center justify-center">
             <Sparkles className="w-2.5 h-2.5 text-white" strokeWidth={2.5} />
           </div>
-          <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-[#5B6B85]">
-            {msg.refused ? "Refused — out of scope" : "Diagnosis"}
+          <div className="text-[12px] font-medium text-[#475569]">
+            {msg.refused ? "Out of scope" : "Diagnosis"}
           </div>
           {msg.confidence != null && !msg.refused && (
-            <div className="text-[10px] font-mono text-[#94A3B8]">
+            <div className="text-[11px] text-[#94A3B8]">
               · top match {(msg.confidence * 100).toFixed(0)}%
             </div>
           )}
         </div>
 
         {msg.refused ? (
-          <div className="bg-[#FEF3C7] border border-[#FCD34D]/50 rounded-xl p-4 flex gap-3 items-start">
+          <div className="bg-gradient-to-br from-[#FEF3C7] to-[#FDE68A] border border-[#FCD34D]/50 rounded-xl p-4 flex gap-3 items-start">
             <AlertTriangle className="w-4 h-4 text-[#B45309] mt-0.5 flex-shrink-0" />
             <div className="text-[13.5px] text-[#78350F] leading-relaxed">
               {msg.text}
             </div>
           </div>
         ) : (
-          <div className="text-[14.5px] leading-[1.65] text-[#0A1628] whitespace-pre-wrap">
-            {renderText(msg.text, msg.retrieved)}
+          <div className="text-[14.5px] text-[#0A1628]">
+            {body}
           </div>
         )}
 
@@ -971,9 +1092,9 @@ function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
 
         {msg.retrieved && msg.retrieved.length > 0 && !msg.refused && (
           <div className="mt-5">
-            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#5B6B85] mb-2.5 flex items-center gap-1.5">
+            <div className="text-[11.5px] font-medium text-[#475569] mb-2.5 flex items-center gap-1.5">
               <BookOpen className="w-3 h-3" />
-              Retrieved manual sections
+              Sources
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               {msg.retrieved.map((r, i) => (
@@ -985,15 +1106,15 @@ function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
 
         {msg.followups && msg.followups.length > 0 && !msg.refused && (
           <div className="mt-5">
-            <div className="text-[10px] font-mono uppercase tracking-[0.14em] text-[#5B6B85] mb-2.5">
-              Follow-ups
+            <div className="text-[11.5px] font-medium text-[#475569] mb-2.5">
+              Suggested next questions
             </div>
             <div className="flex flex-wrap gap-2">
               {msg.followups.map((f, i) => (
                 <button
                   key={i}
                   onClick={() => onFollowupClick(f)}
-                  className="group inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] text-[#1D4ED8] bg-white border border-[#BFDBFE] rounded-full hover:bg-[#2563EB] hover:text-white hover:border-[#2563EB] transition-all"
+                  className="group inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] text-[#1D4ED8] bg-white border border-[#BFDBFE] rounded-full hover:bg-gradient-to-br hover:from-[#2563EB] hover:to-[#1D4ED8] hover:text-white hover:border-[#2563EB] transition-all"
                 >
                   <span>{f}</span>
                   <ArrowRight className="w-3 h-3 opacity-60 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
@@ -1018,7 +1139,7 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
         <div className="flex justify-between items-start mb-5">
           <div>
             <div className="font-display text-[20px] text-[#0A1628] font-bold tracking-tight leading-none">Settings</div>
-            <div className="text-[11px] font-mono text-[#5B6B85] mt-1.5">Voice & language configuration</div>
+            <div className="text-[12px] text-[#64748B] mt-1.5">Voice & language configuration</div>
           </div>
           <button onClick={onClose} className="text-[#5B6B85] hover:text-[#0A1628]">
             <X className="w-4 h-4" />
@@ -1027,7 +1148,7 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
 
         <div className="space-y-5">
           <div>
-            <label className="block text-[11px] font-mono uppercase tracking-[0.12em] text-[#0A1628] mb-1.5 font-medium">
+            <label className="block text-[12px] font-semibold text-[#0A1628] mb-1.5">
               Sarvam API Key
             </label>
             <input
@@ -1043,7 +1164,7 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
           </div>
 
           <div>
-            <label className="block text-[11px] font-mono uppercase tracking-[0.12em] text-[#0A1628] mb-1.5 font-medium">
+            <label className="block text-[12px] font-semibold text-[#0A1628] mb-1.5">
               Voice Input Language
             </label>
             <select
@@ -1620,9 +1741,9 @@ export default function App() {
           <div className="text-[13px] font-medium text-[#0A1628] truncate flex-1">
             {activeConversation.title === "New conversation" ? "New diagnosis" : activeConversation.title}
           </div>
-          <div className="text-[10px] font-mono text-[#94A3B8] flex items-center gap-2">
+          <div className="text-[11.5px] text-[#64748B] flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]"></span>
-            <span>{chunks.length} chunks indexed</span>
+            <span>{chunks.length} sections indexed</span>
           </div>
         </header>
 
@@ -1648,7 +1769,7 @@ export default function App() {
                       <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB] pulse-dot" style={{ animationDelay: "0.2s" }} />
                       <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB] pulse-dot" style={{ animationDelay: "0.4s" }} />
                     </div>
-                    <span className="text-[11.5px] font-mono">{thinkingStage || "Thinking..."}</span>
+                    <span className="text-[12.5px] text-[#475569]">{thinkingStage || "Thinking..."}</span>
                   </div>
                 )}
                 <div ref={messagesEndRef} />
@@ -1681,7 +1802,7 @@ export default function App() {
                 <div className="flex items-center gap-3 px-2">
                   <div className="flex items-center gap-2 flex-1">
                     <div className="w-2 h-2 rounded-full bg-[#DC2626] record-pulse"></div>
-                    <span className="text-[12px] font-mono text-[#DC2626] uppercase tracking-wider">Recording</span>
+                    <span className="text-[12.5px] font-semibold text-[#DC2626]">Recording</span>
                     <div className="flex-1 ml-2">
                       <AudioLevelMeter level={recorder.audioLevel} />
                     </div>
@@ -1707,7 +1828,7 @@ export default function App() {
               <div className="bg-white border border-[#E2E8F0] rounded-2xl p-4 shadow-sm">
                 <div className="flex items-center gap-3 text-[#5B6B85]">
                   <Loader2 className="w-4 h-4 animate-spin text-[#2563EB]" />
-                  <span className="text-[13px] font-mono">Transcribing with Sarvam Saarika...</span>
+                  <span className="text-[13px] text-[#475569]">Transcribing with Sarvam Saarika...</span>
                 </div>
               </div>
             )}
@@ -1716,7 +1837,7 @@ export default function App() {
               <div className="bg-white border border-[#BFDBFE] rounded-2xl p-3 shadow-sm">
                 <div className="flex items-center justify-between px-2 mb-2">
                   <div className="flex items-center gap-2">
-                    <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-[#2563EB] font-semibold">
+                    <div className="text-[12px] font-semibold text-[#2563EB]">
                       Transcript ready
                     </div>
                     {pendingLang && pendingLang !== "unknown" && (
@@ -1726,7 +1847,7 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                  <div className="text-[10px] font-mono text-[#94A3B8]">Edit if needed</div>
+                  <div className="text-[11px] text-[#94A3B8]">Edit if needed</div>
                 </div>
                 <textarea
                   value={pendingTranscript}
