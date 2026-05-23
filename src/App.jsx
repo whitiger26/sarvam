@@ -1446,7 +1446,7 @@ function AudioLevelMeter({ level }) {
 /* ============================================================
    VOICE MODE — hands-free continuous conversation
    ============================================================ */
-function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
+function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange, messages, onCitationClick }) {
   // state: connecting | listening | thinking | speaking | error
   const [state, setState] = useState("connecting");
   const [userTranscript, setUserTranscript] = useState("");
@@ -1457,7 +1457,14 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
   const audioElRef = useRef(null);
   const exitingRef = useRef(false);
   const stateRef = useRef(state);
+  const panelScrollRef = useRef(null);
   useEffect(() => { stateRef.current = state; }, [state]);
+
+  // Auto-scroll the live session panel as new messages arrive
+  useEffect(() => {
+    const el = panelScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, state]);
 
   // Auto-loop trigger: this ref counts loop iterations; bumping it
   // re-runs the listen → process effect chain.
@@ -1493,19 +1500,23 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
     return () => { cancelled = true; };
   }, [turn, sarvamKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Voice Activity Detection while listening
+  // Voice Activity Detection while listening.
+  // Strategy: track a decaying peak of recent audio levels. "Speaking" means
+  // current level is at least 45% of that recent peak (relative threshold —
+  // adapts to mic sensitivity and room noise). "Silence" means we've stayed
+  // below that bar for SILENCE_DURATION_MS. This is robust to noisy rooms
+  // where absolute thresholds fail.
   useEffect(() => {
     if (state !== "listening") return;
-    // Tuned for typical built-in laptop / phone mics:
-    // speech threshold low enough for soft talkers,
-    // silence threshold lower still so background noise doesn't keep us armed
-    const SPEECH_THRESHOLD = 0.025;
-    const SILENCE_THRESHOLD = 0.018;
-    const SILENCE_DURATION_MS = 1000;
+    const SILENCE_DURATION_MS = 900;
+    const MAX_LISTEN_MS = 12000;
+    const MIN_PEAK_FOR_SPEECH = 0.025; // sanity floor — peak must actually be meaningful
+    const RELATIVE_RATIO = 0.45;
+    const PEAK_DECAY = 0.985; // ~1.5% decay per 80ms tick, halves in ~2.4s
+    let recentPeak = 0;
     let hasSpoken = false;
-    let lastSpeechTime = null;
+    let lastLoudTime = null;
     const startTime = Date.now();
-    const MAX_LISTEN_MS = 12000; // hard cap so we never hang on dead silence
 
     const id = setInterval(() => {
       if (exitingRef.current || stateRef.current !== "listening") {
@@ -1513,19 +1524,23 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
         return;
       }
       const lvl = recorder.audioLevelRef.current;
-      if (lvl > SPEECH_THRESHOLD) {
+      const now = Date.now();
+      // Update decaying peak
+      recentPeak = Math.max(recentPeak * PEAK_DECAY, lvl);
+      // Speech if (a) recent peak is meaningful AND (b) current >= 45% of peak
+      const speechFloor = Math.max(MIN_PEAK_FOR_SPEECH * RELATIVE_RATIO, recentPeak * RELATIVE_RATIO);
+      if (recentPeak > MIN_PEAK_FOR_SPEECH && lvl >= speechFloor) {
         hasSpoken = true;
-        lastSpeechTime = Date.now();
-      } else if (lvl < SILENCE_THRESHOLD && hasSpoken && lastSpeechTime) {
-        // Below noise floor — start counting silence from this moment
-        // (don't keep updating lastSpeechTime)
+        lastLoudTime = now;
       }
-      const elapsed = Date.now() - startTime;
-      if (hasSpoken && lastSpeechTime && Date.now() - lastSpeechTime > SILENCE_DURATION_MS) {
+      // End-of-speech: we heard speech AND have been quiet for SILENCE_DURATION_MS
+      if (hasSpoken && lastLoudTime && now - lastLoudTime > SILENCE_DURATION_MS) {
         clearInterval(id);
         processSpeech();
-      } else if (!hasSpoken && elapsed > MAX_LISTEN_MS) {
-        // Silence the whole time — bail and reset listening
+        return;
+      }
+      // Total timeout — heard nothing for the whole window
+      if (!hasSpoken && now - startTime > MAX_LISTEN_MS) {
         clearInterval(id);
         recorder.cancel();
         if (!exitingRef.current) setTurn(t => t + 1);
@@ -1703,7 +1718,7 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
     <div className="fixed inset-0 z-[100] flex flex-col"
       style={{
         background: `
-          radial-gradient(ellipse 900px 600px at 50% 30%,
+          radial-gradient(ellipse 900px 600px at 30% 30%,
             rgba(59, 130, 246, 0.18) 0%,
             rgba(29, 78, 216, 0.10) 35%,
             rgba(10, 22, 40, 0) 70%
@@ -1716,11 +1731,6 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
         @keyframes orb-pulse-speak {
           0%, 100% { transform: scale(1); }
           50% { transform: scale(1.06); }
-        }
-        @keyframes orb-spin {
-          0% { background-position: 0% 50%; }
-          50% { background-position: 100% 50%; }
-          100% { background-position: 0% 50%; }
         }
         .orb-speaking { animation: orb-pulse-speak 0.9s ease-in-out infinite; }
         .orb-thinking-rotate {
@@ -1740,106 +1750,125 @@ function VoiceMode({ onClose, index, sarvamKey, voiceLang, addExchange }) {
         </div>
         <button
           onClick={handleEnd}
-          className="text-white/50 hover:text-white text-[12px] uppercase tracking-wider"
+          className="text-white/50 hover:text-white p-1"
         >
           <X className="w-5 h-5" />
         </button>
       </div>
 
-      {/* Center stage */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6">
-        {/* Orb */}
-        <div className="relative mb-10">
-          {state === "thinking" && (
+      {/* Main split: orb left, session right */}
+      <div className="flex-1 flex min-h-0 px-6 pb-6 gap-6">
+        {/* Left — orb / state / controls */}
+        <div className="flex-1 flex flex-col items-center justify-center min-w-0">
+          {/* Orb */}
+          <div className="relative mb-8">
+            {state === "thinking" && (
+              <div
+                className="absolute inset-0 rounded-full orb-thinking-rotate"
+                style={{ filter: "blur(20px)", opacity: 0.5 }}
+              />
+            )}
             <div
-              className="absolute inset-0 rounded-full orb-thinking-rotate"
-              style={{ filter: "blur(20px)", opacity: 0.5 }}
+              className={`relative w-[160px] h-[160px] rounded-full transition-transform duration-100 ease-out ${
+                state === "speaking" ? "orb-speaking" : ""
+              }`}
+              style={{
+                transform: `scale(${orbScale})`,
+                background: state === "thinking"
+                  ? "radial-gradient(circle at 30% 30%, #60A5FA 0%, #2563EB 40%, #1E3A8A 80%, #0A1628 100%)"
+                  : state === "speaking"
+                  ? "radial-gradient(circle at 30% 30%, #34D399 0%, #10B981 40%, #047857 80%, #064E3B 100%)"
+                  : state === "error"
+                  ? "radial-gradient(circle at 30% 30%, #F87171 0%, #DC2626 50%, #7F1D1D 90%)"
+                  : "radial-gradient(circle at 30% 30%, #93C5FD 0%, #3B82F6 40%, #1E40AF 80%, #0A1628 100%)",
+                boxShadow: `0 0 ${orbGlow}px ${state === "speaking" ? "rgba(16, 185, 129, 0.55)" : state === "error" ? "rgba(220, 38, 38, 0.5)" : "rgba(59, 130, 246, 0.55)"}, inset -10px -20px 40px rgba(0,0,0,0.4)`,
+              }}
             />
-          )}
-          <div
-            className={`relative w-[180px] h-[180px] rounded-full transition-transform duration-100 ease-out ${
-              state === "speaking" ? "orb-speaking" : ""
-            }`}
-            style={{
-              transform: `scale(${orbScale})`,
-              background: state === "thinking"
-                ? "radial-gradient(circle at 30% 30%, #60A5FA 0%, #2563EB 40%, #1E3A8A 80%, #0A1628 100%)"
-                : state === "speaking"
-                ? "radial-gradient(circle at 30% 30%, #34D399 0%, #10B981 40%, #047857 80%, #064E3B 100%)"
-                : state === "error"
-                ? "radial-gradient(circle at 30% 30%, #F87171 0%, #DC2626 50%, #7F1D1D 90%)"
-                : "radial-gradient(circle at 30% 30%, #93C5FD 0%, #3B82F6 40%, #1E40AF 80%, #0A1628 100%)",
-              boxShadow: `0 0 ${orbGlow}px ${state === "speaking" ? "rgba(16, 185, 129, 0.55)" : state === "error" ? "rgba(220, 38, 38, 0.5)" : "rgba(59, 130, 246, 0.55)"}, inset -10px -20px 40px rgba(0,0,0,0.4)`,
-            }}
-          />
-        </div>
-
-        {/* State label */}
-        <div className="text-white text-[20px] font-medium mb-1 tracking-tight">
-          {stateLabel}
-        </div>
-        <div className="text-white/50 text-[12.5px] mb-6 max-w-md text-center">
-          {state === "listening" && "Speak now — I'll respond when you pause, or tap Done."}
-          {state === "thinking" && "Searching the manuals and thinking…"}
-          {state === "speaking" && "Listening will resume automatically."}
-          {state === "connecting" && "Setting up the mic…"}
-          {state === "error" && errorMsg}
-        </div>
-
-        {/* Mic level indicator + Done button — only while listening */}
-        {state === "listening" && (
-          <div className="flex flex-col items-center gap-3 mb-6">
-            <div className="flex items-center gap-[3px] h-5">
-              {Array.from({ length: 18 }).map((_, i) => {
-                const center = 9;
-                const distance = Math.abs(i - center) / center;
-                const falloff = 1 - distance * 0.6;
-                const h = Math.max(0.18, recorder.audioLevel * falloff * 1.4);
-                return (
-                  <div
-                    key={i}
-                    className="w-[3px] rounded-full bg-white/70"
-                    style={{ height: `${Math.min(100, h * 100)}%`, transition: "height 60ms linear" }}
-                  />
-                );
-              })}
-            </div>
-            <button
-              onClick={handleManualDone}
-              className="px-4 py-1.5 bg-white text-[#0A1628] rounded-full text-[12.5px] font-medium hover:bg-white/90 transition-colors"
-            >
-              Done speaking
-            </button>
           </div>
-        )}
 
-        {/* Captions */}
-        <div className="w-full max-w-xl space-y-3">
-          {userTranscript && (
-            <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-3">
-              <div className="text-[10.5px] uppercase tracking-wider text-white/40 mb-1">You said</div>
-              <div className="text-[14.5px] text-white/90 leading-relaxed">{userTranscript}</div>
+          {/* State label */}
+          <div className="text-white text-[19px] font-medium mb-1 tracking-tight">
+            {stateLabel}
+          </div>
+          <div className="text-white/50 text-[12.5px] mb-5 max-w-sm text-center px-4">
+            {state === "listening" && "Speak now — I'll respond when you pause, or tap Done."}
+            {state === "thinking" && "Searching the manuals and thinking…"}
+            {state === "speaking" && "Listening will resume automatically."}
+            {state === "connecting" && "Setting up the mic…"}
+            {state === "error" && errorMsg}
+          </div>
+
+          {/* Mic level indicator + Done button — only while listening */}
+          {state === "listening" && (
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex items-center gap-[3px] h-5">
+                {Array.from({ length: 18 }).map((_, i) => {
+                  const center = 9;
+                  const distance = Math.abs(i - center) / center;
+                  const falloff = 1 - distance * 0.6;
+                  const h = Math.max(0.18, recorder.audioLevel * falloff * 1.4);
+                  return (
+                    <div
+                      key={i}
+                      className="w-[3px] rounded-full bg-white/70"
+                      style={{ height: `${Math.min(100, h * 100)}%`, transition: "height 60ms linear" }}
+                    />
+                  );
+                })}
+              </div>
+              <button
+                onClick={handleManualDone}
+                className="px-4 py-1.5 bg-white text-[#0A1628] rounded-full text-[12.5px] font-medium hover:bg-white/90 transition-colors"
+              >
+                Done speaking
+              </button>
             </div>
           )}
-          {assistantText && (
-            <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl px-4 py-3">
-              <div className="text-[10.5px] uppercase tracking-wider text-white/40 mb-1">Reply</div>
-              <div className="text-[14.5px] text-white/90 leading-relaxed">{assistantText}</div>
-            </div>
+
+          {state === "error" && (
+            <button
+              onClick={() => setTurn(t => t + 1)}
+              className="px-4 py-1.5 bg-white text-[#0A1628] rounded-full text-[13px] font-medium hover:bg-white/90 transition-colors"
+            >
+              Try again
+            </button>
           )}
+        </div>
+
+        {/* Right — live session panel */}
+        <div className="hidden md:flex w-[44%] max-w-[520px] flex-col bg-white/95 backdrop-blur rounded-2xl border border-white/10 shadow-2xl shadow-black/20 overflow-hidden">
+          <div className="px-5 py-3 border-b border-[#E5E4DF] flex items-center justify-between">
+            <div className="text-[12.5px] font-semibold text-[#0A1628]">Live session</div>
+            <div className="text-[11px] text-[#64748B]">
+              {messages.length === 0 ? "Waiting for first turn" : `${Math.floor(messages.filter(m => m.role === "user").length)} exchange${messages.filter(m => m.role === "user").length === 1 ? "" : "s"}`}
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto scrollbar-thin px-4 py-4" ref={panelScrollRef}>
+            {messages.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center text-[#94A3B8] px-6">
+                <AudioLines className="w-6 h-6 mb-3 opacity-50" />
+                <div className="text-[13px]">
+                  Start talking — your conversation will appear here in real time, with citations.
+                </div>
+              </div>
+            ) : (
+              <>
+                {messages.map((m, i) => (
+                  <MessageBubble
+                    key={i}
+                    msg={m}
+                    onCitationClick={(chunk) => onCitationClick && onCitationClick(chunk)}
+                    onFollowupClick={() => {}}
+                  />
+                ))}
+              </>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Bottom bar */}
-      <div className="px-6 py-6 flex items-center justify-center">
-        {state === "error" ? (
-          <button
-            onClick={() => setTurn(t => t + 1)}
-            className="px-5 py-2.5 bg-white text-[#0A1628] rounded-full text-[13px] font-medium hover:bg-white/90 transition-colors mr-2"
-          >
-            Try again
-          </button>
-        ) : null}
+      <div className="px-6 py-5 flex items-center justify-center">
         <button
           onClick={handleEnd}
           className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#DC2626] hover:bg-[#B91C1C] text-white rounded-full text-[13px] font-medium transition-colors shadow-lg shadow-red-900/30"
@@ -2569,6 +2598,8 @@ export default function App() {
           sarvamKey={sarvamKey}
           voiceLang={voiceLang}
           addExchange={addVoiceExchange}
+          messages={messages}
+          onCitationClick={setPreviewChunk}
         />
       )}
     </div>
