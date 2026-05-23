@@ -257,11 +257,39 @@ class TfIdfIndex {
       }
       return Math.sqrt(s) || 1;
     });
+
+    // Brand vocabulary: token -> set of chunk indices that belong to that brand.
+    // Used at query time to detect "the user mentioned bike X" and boost those
+    // chunks while de-prioritising chunks from other bikes.
+    this.brandVocab = new Map();
+    chunks.forEach((c, i) => {
+      const brandTokens = tokenize(c.brand);
+      brandTokens.forEach(t => {
+        if (t.length < 3) return; // skip short/generic tokens
+        // skip generic words that wouldn't disambiguate a bike
+        if (["the", "and", "manual", "owner", "service", "guide", "motorcycle", "bike", "general", "care", "universal", "classic"].includes(t)) return;
+        if (!this.brandVocab.has(t)) this.brandVocab.set(t, new Set());
+        this.brandVocab.get(t).add(i);
+      });
+    });
   }
 
   search(query, topK = 4) {
     const qTokens = tokenize(query);
     if (qTokens.length === 0) return [];
+
+    // Detect brand mentions in the query. If the user names a specific bike,
+    // we'll boost matching chunks. If they don't name one (or every chunk in
+    // the corpus matches, meaning the "brand" word isn't selective), skip the boost.
+    const brandMatchedChunks = new Set();
+    for (const t of qTokens) {
+      if (this.brandVocab.has(t)) {
+        this.brandVocab.get(t).forEach(i => brandMatchedChunks.add(i));
+      }
+    }
+    const hasBrandFilter =
+      brandMatchedChunks.size > 0 && brandMatchedChunks.size < this.chunks.length;
+
     const qtf = {};
     for (const t of qTokens) qtf[t] = (qtf[t] || 0) + 1;
     const qlen = qTokens.length;
@@ -272,6 +300,7 @@ class TfIdfIndex {
       qNorm += w * w;
     }
     qNorm = Math.sqrt(qNorm) || 1;
+
     const scores = this.docTermFreqs.map((dtf, i) => {
       let dot = 0;
       for (const t in qtf) {
@@ -280,7 +309,15 @@ class TfIdfIndex {
           dot += qtf[t] * idf * dtf[t] * idf;
         }
       }
-      const sim = dot / (this.docNorms[i] * qNorm);
+      let sim = dot / (this.docNorms[i] * qNorm);
+
+      // Brand-aware boost: 2.5x for chunks from the bike the user mentioned,
+      // 0.35x for chunks from other bikes. This makes brand-specific answers
+      // surface above general matches with stronger keyword overlap.
+      if (hasBrandFilter) {
+        sim *= brandMatchedChunks.has(i) ? 2.5 : 0.35;
+      }
+
       return { idx: i, score: sim, chunk: this.chunks[i] };
     });
     scores.sort((a, b) => b.score - a.score);
@@ -469,25 +506,25 @@ const REFUSAL_PHRASE =
   "I couldn't find this in the loaded manual sections. Please consult your authorized service center or upload additional manual pages covering this topic.";
 
 function buildSystemPrompt() {
-  return `You are a precise motorcycle troubleshooting assistant. You must follow these rules WITHOUT EXCEPTION:
+  return `You are a motorcycle troubleshooting assistant. Follow these rules:
 
-1. Answer ONLY using information from the MANUAL EXCERPTS provided in the user message. Do not use prior knowledge of motorcycles. Even if you are certain of an answer, refuse unless it is explicitly supported by an excerpt.
+1. Answer using the MANUAL EXCERPTS provided in the user message. The excerpts may come from a DIFFERENT motorcycle model than the user's bike. That is okay — general motorcycle troubleshooting principles (engine diagnosis, electrical, brakes, exhaust smoke colors, cold-start behaviour, charging system voltages, etc.) typically apply across brands and models. When you apply principles from a different model's manual, briefly say so, e.g., "Based on general principles from the [Brand] service manual..." or "The same diagnosis applies broadly to most motorcycles..."
 
-2. If the excerpts do not contain enough information to answer, reply with EXACTLY this sentence and nothing else:
+2. Only refuse if the excerpts do not cover the topic AT ALL — not even broadly. In that case, reply with EXACTLY this sentence and nothing else:
 "${REFUSAL_PHRASE}"
 
-3. Cite every factual claim by appending [N] where N is the excerpt number. Multiple citations like [1][3] are fine.
+3. Cite every factual claim with [N] markers matching excerpt numbers. Multiple citations like [1][3] are fine. Cite generously.
 
 4. Be concise. Use short paragraphs or bullet points. Lead with the most likely cause.
 
-5. For any safety-critical issue (brakes, fuel leaks, electrical fires, hot engine), include a brief safety note recommending professional service.
+5. For safety-critical issues (brakes, fuel leaks, electrical fires, hot engine, fuel system), include a brief safety note recommending professional service.
 
-6. If an image is provided, briefly describe what you observe (1 line) before answering, then connect the observation to relevant excerpts.
+6. If an image is provided, briefly describe what you observe (one line) before answering.
 
-7. Never invent part numbers, torque values, or specifications. Use only values present in the excerpts.
+7. Never invent specific part numbers, torque values, jet sizes, or model-specific specs. Use only values present in the excerpts. If a spec isn't in the excerpts for the user's bike, say "consult your model's specifications" rather than guessing.
 
 8. AFTER your answer, on a new line, write exactly: ===FOLLOWUPS===
-Then output 3 short follow-up questions a user might naturally ask next (one per line, no bullets/numbering, max 9 words each). Make them specific and grounded in the excerpts. If you used the refusal phrase, do NOT output the FOLLOWUPS section.
+Then output 3 short follow-up questions a user might naturally ask next (one per line, no bullets/numbering, max 9 words each). Make them grounded in the excerpts and conversation. If you used the refusal phrase, do NOT output the FOLLOWUPS section.
 
 Format the answer as plain text with [N] citation markers inline. Do not add a "Sources:" section — the UI renders citations separately.`;
 }
@@ -1244,18 +1281,65 @@ export default function App() {
     }
   };
 
-  /* ----- Image picker ----- */
-  const handleImagePick = e => {
-    const f = e.target.files?.[0];
-    if (!f) return;
+  /* ----- Image handling (click / paste / drop) ----- */
+  const ingestImageFile = useCallback(file => {
+    if (!file) return false;
+    if (!file.type || !file.type.startsWith("image/")) return false;
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
       const base64 = dataUrl.split(",")[1];
-      setPendingImage({ dataUrl, base64, mime: f.type });
+      setPendingImage({ dataUrl, base64, mime: file.type });
     };
-    reader.readAsDataURL(f);
+    reader.readAsDataURL(file);
+    return true;
+  }, []);
+
+  const handleImagePick = e => {
+    const f = e.target.files?.[0];
+    if (f) ingestImageFile(f);
     e.target.value = "";
+  };
+
+  const handlePaste = e => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file && ingestImageFile(file)) {
+          e.preventDefault();
+          return;
+        }
+      }
+    }
+  };
+
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  const handleDragEnter = e => {
+    if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingOver(true);
+  };
+  const handleDragOver = e => {
+    if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+  const handleDragLeave = e => {
+    e.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingOver(false);
+  };
+  const handleDrop = e => {
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) ingestImageFile(file);
   };
 
   /* ----- Voice flow ----- */
@@ -1371,7 +1455,7 @@ export default function App() {
       const retrieved = index.search(retrievalQuery, 4);
       const topScore = retrieved[0]?.score || 0;
 
-      const THRESHOLD = 0.08;
+      const THRESHOLD = 0.04;
       if (retrieved.length === 0 || topScore < THRESHOLD) {
         setMessages(prev => [
           ...prev,
@@ -1574,7 +1658,13 @@ export default function App() {
         </div>
 
         {/* Composer */}
-        <div className="px-6 pb-5 pt-3 bg-gradient-to-t from-[#F4F7FC] via-[#F4F7FC] to-transparent">
+        <div
+          className="px-6 pb-5 pt-3 bg-gradient-to-t from-[#F4F7FC] via-[#F4F7FC] to-transparent"
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <div className="max-w-3xl mx-auto">
             {pendingImage && composerState === "idle" && (
               <div className="mb-2 inline-flex items-center gap-2 bg-white border border-[#E2E8F0] rounded-lg p-1.5 pr-3">
@@ -1664,17 +1754,22 @@ export default function App() {
             )}
 
             {composerState === "idle" && (
-              <div className="bg-white border border-[#E2E8F0] rounded-2xl shadow-sm focus-within:border-[#2563EB] focus-within:shadow-blue-500/5 transition-all">
+              <div className={`bg-white border rounded-2xl shadow-sm transition-all ${
+                isDraggingOver
+                  ? "border-[#2563EB] border-2 border-dashed shadow-blue-500/10 bg-[#EFF6FF]/40"
+                  : "border-[#E2E8F0] focus-within:border-[#2563EB] focus-within:shadow-blue-500/5"
+              }`}>
                 <textarea
                   value={input}
                   onChange={e => setInput(e.target.value)}
+                  onPaste={handlePaste}
                   onKeyDown={e => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       handleSend();
                     }
                   }}
-                  placeholder="Describe the issue, speak it, or attach a photo"
+                  placeholder={isDraggingOver ? "Drop image to attach" : "Describe the issue, paste or drop an image, speak, or attach a photo"}
                   disabled={isThinking}
                   rows={1}
                   className="w-full px-4 py-3 bg-transparent text-[14.5px] focus:outline-none resize-none placeholder:text-[#94A3B8] disabled:opacity-50"
