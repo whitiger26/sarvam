@@ -48,7 +48,7 @@ function ensureFonts() {
   link.id = FONT_LINK_ID;
   link.rel = "stylesheet";
   link.href =
-    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap";
+    "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500;1,9..144,600&family=JetBrains+Mono:wght@400;500;600&display=swap";
   document.head.appendChild(link);
 }
 
@@ -685,7 +685,7 @@ function Logo({ collapsed }) {
       </div>
       {!collapsed && (
         <div className="flex flex-col leading-tight">
-          <div className="font-display text-[16px] font-bold text-[#0A1628] tracking-tight">
+          <div className="font-serif italic text-[20px] text-[#0A1628] tracking-tight" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 100, 'wght' 500" }}>
             garageOS
           </div>
           <div className="text-[11px] text-[#64748B] mt-0.5">
@@ -716,7 +716,7 @@ function Sidebar({
 
   return (
     <aside
-      className={`bg-[#FAFBFD] border-r border-[#E2E8F0] flex flex-col transition-all duration-200 ease-out ${
+      className={`bg-white/50 backdrop-blur-sm border-r border-[#E5E4DF]/70 flex flex-col transition-all duration-200 ease-out ${
         collapsed ? "w-[56px]" : "w-[280px]"
       }`}
     >
@@ -749,7 +749,7 @@ function Sidebar({
       <div className={`${collapsed ? "px-2" : "px-3"} pt-2 pb-3`}>
         <button
           onClick={onNewConversation}
-          className={`w-full flex items-center ${collapsed ? "justify-center h-10 w-10 mx-auto" : "justify-start gap-2 px-3 py-2.5"} bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] hover:from-[#2563EB] hover:to-[#1E40AF] text-white rounded-lg text-[13px] font-medium transition-all shadow-md shadow-blue-500/20 hover:shadow-lg hover:shadow-blue-500/30`}
+          className={`w-full flex items-center ${collapsed ? "justify-center h-10 w-10 mx-auto" : "justify-start gap-2 px-4 py-2.5"} bg-[#0A1628] hover:bg-[#1E293B] text-white rounded-full text-[13px] font-medium transition-all shadow-md shadow-black/10 hover:shadow-lg`}
           title={collapsed ? "New chat" : undefined}
         >
           <MessageSquarePlus className="w-4 h-4 flex-shrink-0" strokeWidth={2.25} />
@@ -797,7 +797,7 @@ function Sidebar({
         </div>
       )}
 
-      <div className={`${collapsed ? "px-2" : "px-3"} mt-2 border-t border-[#E2E8F0] pt-3`}>
+      <div className={`${collapsed ? "px-2" : "px-3"} mt-2 border-t border-[#E5E4DF] pt-3`}>
         {!collapsed && (
           <div className="flex items-center justify-between px-1.5 mb-2">
             <div className="text-[10.5px] font-semibold text-[#94A3B8] uppercase tracking-wide" style={{ letterSpacing: "0.04em" }}>
@@ -869,7 +869,7 @@ function Sidebar({
       )}
 
       {/* Footer */}
-      <div className={`mt-auto ${collapsed ? "px-2" : "px-3"} py-3 border-t border-[#E2E8F0]`}>
+      <div className={`mt-auto ${collapsed ? "px-2" : "px-3"} py-3 border-t border-[#E5E4DF]`}>
         <button
           onClick={onOpenSettings}
           className={`w-full flex items-center ${collapsed ? "justify-center" : "gap-2 px-2"} py-1.5 text-[12.5px] text-[#5B6B85] hover:text-[#0A1628] hover:bg-[#EFF6FF] rounded-md transition-colors`}
@@ -899,7 +899,7 @@ function CitationCard({ n, chunk, onClick }) {
   return (
     <button
       onClick={onClick}
-      className="text-left border border-[#E2E8F0] hover:border-[#2563EB] rounded-lg p-3.5 bg-white hover:shadow-md hover:shadow-blue-500/5 transition-all w-full"
+      className="text-left border border-[#E5E4DF] hover:border-[#2563EB] rounded-lg p-3.5 bg-white hover:shadow-md hover:shadow-blue-500/5 transition-all w-full"
     >
       <div className="flex items-baseline justify-between gap-2 mb-1.5">
         <div className="font-mono text-[10.5px] text-[#2563EB] font-semibold">[{n}]</div>
@@ -1037,7 +1037,7 @@ function MessageBubble({ msg, onCitationClick, onFollowupClick }) {
       <div className="flex justify-end mb-6">
         <div className="max-w-[75%]">
           {msg.image && (
-            <div className="mb-2 rounded-xl overflow-hidden border border-[#E2E8F0]">
+            <div className="mb-2 rounded-xl overflow-hidden border border-[#E5E4DF]">
               <img src={msg.image} alt="upload" className="max-h-56 object-cover" />
             </div>
           )}
@@ -1134,15 +1134,17 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
   return (
     <div className="fixed inset-0 z-50 bg-[#0A1628]/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-white border border-[#E2E8F0] rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-blue-500/10"
+        className="bg-white border border-[#E5E4DF] rounded-2xl max-w-md w-full p-6 shadow-2xl shadow-black/10"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex justify-between items-start mb-5">
           <div>
-            <div className="font-display text-[20px] text-[#0A1628] font-bold tracking-tight leading-none">Settings</div>
-            <div className="text-[12px] text-[#64748B] mt-1.5">Voice & language configuration</div>
+            <div className="font-serif text-[28px] text-[#0A1628] leading-none" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50, 'wght' 500" }}>
+              Settings
+            </div>
+            <div className="text-[12px] text-[#64748B] mt-2">Voice & language configuration</div>
           </div>
-          <button onClick={onClose} className="text-[#5B6B85] hover:text-[#0A1628]">
+          <button onClick={onClose} className="text-[#64748B] hover:text-[#0A1628]">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -1150,28 +1152,38 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
         <div className="space-y-5">
           <div>
             <label className="block text-[12px] font-semibold text-[#0A1628] mb-1.5">
-              Sarvam API Key
+              Sarvam API key
             </label>
             <input
               type="password"
               value={sarvamKey}
               onChange={e => setSarvamKey(e.target.value)}
               placeholder="Paste your key..."
-              className="w-full px-3 py-2 text-[13px] font-mono bg-[#F4F7FC] border border-[#E2E8F0] rounded-lg focus:outline-none focus:border-[#2563EB] focus:bg-white transition-colors"
+              className="w-full px-3 py-2 text-[13px] font-mono bg-[#FBFAF7] border border-[#E5E4DF] rounded-lg focus:outline-none focus:border-[#0A1628] focus:bg-white transition-colors"
             />
-            <p className="text-[11px] text-[#5B6B85] mt-1.5 leading-relaxed">
-              Used for Saarika ASR, Bulbul TTS, and Mayura translation. Required for voice input in Indian languages. Get one at <span className="font-mono text-[#1D4ED8]">sarvam.ai</span>.
-            </p>
+            <div className="mt-2.5 rounded-lg bg-[#FBFAF7] border border-[#E5E4DF]/60 p-3">
+              <div className="text-[11.5px] text-[#0A1628] font-medium mb-1.5">
+                One key, three services
+              </div>
+              <div className="text-[11.5px] text-[#475569] leading-relaxed space-y-1">
+                <div className="flex gap-2"><span className="font-mono text-[10.5px] text-[#94A3B8] mt-[1px] w-[58px] flex-shrink-0">Saarika</span><span>Speech-to-text for your voice questions</span></div>
+                <div className="flex gap-2"><span className="font-mono text-[10.5px] text-[#94A3B8] mt-[1px] w-[58px] flex-shrink-0">Bulbul</span><span>Text-to-speech to read answers aloud</span></div>
+                <div className="flex gap-2"><span className="font-mono text-[10.5px] text-[#94A3B8] mt-[1px] w-[58px] flex-shrink-0">Mayura</span><span>Translation between Indic languages and English</span></div>
+              </div>
+              <div className="text-[11px] text-[#64748B] mt-2 pt-2 border-t border-[#E5E4DF]/60">
+                Sarvam uses a single subscription key for all three. Get one at <span className="font-mono text-[#0A1628]">sarvam.ai</span>.
+              </div>
+            </div>
           </div>
 
           <div>
             <label className="block text-[12px] font-semibold text-[#0A1628] mb-1.5">
-              Voice Input Language
+              Voice input language
             </label>
             <select
               value={voiceLang}
               onChange={e => setVoiceLang(e.target.value)}
-              className="w-full px-3 py-2 text-[13px] bg-[#F4F7FC] border border-[#E2E8F0] rounded-lg focus:outline-none focus:border-[#2563EB] focus:bg-white"
+              className="w-full px-3 py-2 text-[13px] bg-[#FBFAF7] border border-[#E5E4DF] rounded-lg focus:outline-none focus:border-[#0A1628] focus:bg-white"
             >
               <option value="unknown">Auto-detect</option>
               <option value="en-IN">English (India)</option>
@@ -1190,11 +1202,11 @@ function SettingsModal({ open, onClose, sarvamKey, setSarvamKey, voiceLang, setV
           <div className="flex items-center justify-between py-2">
             <div>
               <div className="text-[13px] text-[#0A1628] font-medium">Speak responses aloud</div>
-              <div className="text-[11px] text-[#5B6B85]">Generates audio via Bulbul (requires key)</div>
+              <div className="text-[11px] text-[#64748B]">Generates audio via Bulbul (requires key)</div>
             </div>
             <button
               onClick={() => setTtsEnabled(!ttsEnabled)}
-              className={`w-10 h-5 rounded-full transition-colors relative ${ttsEnabled ? "bg-[#2563EB]" : "bg-[#E2E8F0]"}`}
+              className={`w-10 h-5 rounded-full transition-colors relative ${ttsEnabled ? "bg-[#0A1628]" : "bg-[#E5E4DF]"}`}
             >
               <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow ${ttsEnabled ? "left-5" : "left-0.5"}`} />
             </button>
@@ -1210,16 +1222,16 @@ function DocumentPreviewModal({ doc, onClose, onSelectChunk }) {
   return (
     <div className="fixed inset-0 z-50 bg-[#0A1628]/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-white border border-[#E2E8F0] rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col shadow-2xl shadow-blue-500/10"
+        className="bg-white border border-[#E5E4DF] rounded-2xl max-w-2xl w-full max-h-[80vh] flex flex-col shadow-2xl shadow-blue-500/10"
         onClick={e => e.stopPropagation()}
       >
-        <div className="flex justify-between items-start p-6 border-b border-[#E2E8F0]">
+        <div className="flex justify-between items-start p-6 border-b border-[#E5E4DF]">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-lg bg-[#EFF6FF] flex items-center justify-center flex-shrink-0">
               <FileText className="w-5 h-5 text-[#2563EB]" />
             </div>
             <div>
-              <div className="font-display text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight">
+              <div className="font-serif text-[22px] text-[#0A1628] leading-tight" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50, 'wght' 500" }}>
                 {doc.brand}
               </div>
               <div className="text-[12px] text-[#5B6B85] mt-0.5 font-mono">
@@ -1236,7 +1248,7 @@ function DocumentPreviewModal({ doc, onClose, onSelectChunk }) {
             <button
               key={chunk.id}
               onClick={() => onSelectChunk(chunk)}
-              className="w-full text-left p-4 border border-[#E2E8F0] hover:border-[#2563EB] hover:bg-[#EFF6FF]/30 rounded-lg transition-all"
+              className="w-full text-left p-4 border border-[#E5E4DF] hover:border-[#2563EB] hover:bg-[#EFF6FF]/30 rounded-lg transition-all"
             >
               <div className="flex items-baseline justify-between gap-3 mb-1.5">
                 <div className="text-[13px] font-semibold text-[#0A1628]">
@@ -1262,12 +1274,12 @@ function ChunkPreviewModal({ chunk, onClose }) {
   return (
     <div className="fixed inset-0 z-[60] bg-[#0A1628]/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-white border border-[#E2E8F0] rounded-2xl max-w-lg w-full p-6 shadow-2xl"
+        className="bg-white border border-[#E5E4DF] rounded-2xl max-w-lg w-full p-6 shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex justify-between items-start mb-4">
           <div>
-            <div className="font-display text-[18px] text-[#0A1628] font-bold tracking-tight leading-tight">
+            <div className="font-serif text-[22px] text-[#0A1628] leading-tight" style={{ fontVariationSettings: "'opsz' 96, 'SOFT' 50, 'wght' 500" }}>
               {chunk.brand}
             </div>
             <div className="text-[11px] font-mono text-[#5B6B85] mt-1">
@@ -1694,14 +1706,24 @@ export default function App() {
     <div
       className="h-screen w-full flex overflow-hidden"
       style={{
-        background: "#F4F7FC",
+        background: `
+          radial-gradient(ellipse 1100px 520px at 50% -180px,
+            rgba(255, 167, 102, 0.22) 0%,
+            rgba(248, 200, 158, 0.18) 18%,
+            rgba(220, 188, 220, 0.16) 38%,
+            rgba(173, 188, 255, 0.20) 58%,
+            rgba(255, 255, 255, 0) 82%
+          ),
+          linear-gradient(180deg, #FBFAF7 0%, #F5F4F1 100%)
+        `,
         fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         color: "#0A1628",
       }}
     >
       <style>{`
-        .font-display { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; font-feature-settings: 'cv11', 'ss01', 'ss03'; }
-        .font-mono { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
+        .font-display { font-family: 'Fraunces', 'Inter', Georgia, serif; font-variation-settings: 'opsz' 96, 'SOFT' 100; letter-spacing: -0.015em; }
+        .font-serif   { font-family: 'Fraunces', 'Inter', Georgia, serif; font-variation-settings: 'opsz' 144, 'SOFT' 50; }
+        .font-mono    { font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace; }
         .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
         .scrollbar-thin::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
         .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
@@ -1736,9 +1758,9 @@ export default function App() {
       />
 
       {/* MAIN AREA */}
-      <main className="flex-1 flex flex-col min-w-0 bg-[#F4F7FC]">
+      <main className="flex-1 flex flex-col min-w-0">
         {/* Header */}
-        <header className="px-6 py-3.5 border-b border-[#E2E8F0]/70 bg-white/60 backdrop-blur-sm flex items-center justify-between">
+        <header className="px-6 py-3.5 border-b border-[#E5E4DF]/60 bg-white/40 backdrop-blur-sm flex items-center justify-between">
           <div className="text-[13px] font-medium text-[#0A1628] truncate flex-1">
             {activeConversation.title === "New conversation" ? "New diagnosis" : activeConversation.title}
           </div>
@@ -1781,7 +1803,7 @@ export default function App() {
 
         {/* Composer */}
         <div
-          className="px-6 pb-5 pt-3 bg-gradient-to-t from-[#F4F7FC] via-[#F4F7FC] to-transparent"
+          className="px-6 pb-5 pt-3 bg-gradient-to-t from-[#F5F4F1] via-[#F5F4F1]/95 to-transparent"
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
@@ -1789,7 +1811,7 @@ export default function App() {
         >
           <div className="max-w-3xl mx-auto">
             {pendingImage && composerState === "idle" && (
-              <div className="mb-2 inline-flex items-center gap-2 bg-white border border-[#E2E8F0] rounded-lg p-1.5 pr-3">
+              <div className="mb-2 inline-flex items-center gap-2 bg-white border border-[#E5E4DF] rounded-lg p-1.5 pr-3">
                 <img src={pendingImage.dataUrl} className="w-10 h-10 object-cover rounded" />
                 <span className="text-[12px] text-[#0A1628]">Image attached</span>
                 <button onClick={() => setPendingImage(null)} className="text-[#5B6B85] hover:text-[#DC2626]">
@@ -1810,13 +1832,13 @@ export default function App() {
                   </div>
                   <button
                     onClick={handleCancelRecording}
-                    className="px-3 py-1.5 text-[12.5px] text-[#5B6B85] hover:text-[#0A1628] hover:bg-[#F1F5F9] rounded-lg font-medium transition-colors"
+                    className="px-3.5 py-1.5 text-[12.5px] text-[#475569] hover:text-[#0A1628] hover:bg-[#F1F5F9] rounded-full font-medium transition-colors"
                   >
                     Cancel
                   </button>
                   <button
                     onClick={handleStopRecording}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-lg text-[12.5px] font-medium transition-colors"
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-[#0A1628] hover:bg-[#1E293B] text-white rounded-full text-[12.5px] font-medium transition-colors"
                   >
                     <Square className="w-3 h-3 fill-current" strokeWidth={0} />
                     Stop & transcribe
@@ -1826,7 +1848,7 @@ export default function App() {
             )}
 
             {composerState === "transcribing" && (
-              <div className="bg-white border border-[#E2E8F0] rounded-2xl p-4 shadow-sm">
+              <div className="bg-white border border-[#E5E4DF] rounded-2xl p-4 shadow-sm">
                 <div className="flex items-center gap-3 text-[#5B6B85]">
                   <Loader2 className="w-4 h-4 animate-spin text-[#2563EB]" />
                   <span className="text-[13px] text-[#475569]">Transcribing with Sarvam Saarika...</span>
@@ -1857,16 +1879,16 @@ export default function App() {
                   className="w-full px-2 py-1 text-[14px] bg-transparent focus:outline-none resize-none text-[#0A1628]"
                   autoFocus
                 />
-                <div className="flex items-center justify-end gap-2 px-2 pt-2 border-t border-[#E2E8F0]">
+                <div className="flex items-center justify-end gap-2 px-2 pt-2 border-t border-[#E5E4DF]">
                   <button
                     onClick={handleCancelRecording}
-                    className="px-3 py-1.5 text-[12.5px] text-[#5B6B85] hover:text-[#DC2626] hover:bg-[#FEE2E2] rounded-lg font-medium transition-colors"
+                    className="px-3.5 py-1.5 text-[12.5px] text-[#475569] hover:text-[#DC2626] hover:bg-[#FEE2E2] rounded-full font-medium transition-colors"
                   >
                     Discard
                   </button>
                   <button
                     onClick={handleSendTranscript}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white rounded-lg text-[12.5px] font-medium transition-colors"
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-[#0A1628] hover:bg-[#1E293B] text-white rounded-full text-[12.5px] font-medium transition-colors"
                   >
                     <Send className="w-3 h-3" />
                     Send
@@ -1879,7 +1901,7 @@ export default function App() {
               <div className={`bg-white border rounded-2xl shadow-sm transition-all ${
                 isDraggingOver
                   ? "border-[#2563EB] border-2 border-dashed shadow-blue-500/10 bg-[#EFF6FF]/40"
-                  : "border-[#E2E8F0] focus-within:border-[#2563EB] focus-within:shadow-blue-500/5"
+                  : "border-[#E5E4DF] focus-within:border-[#2563EB] focus-within:shadow-blue-500/5"
               }`}>
                 <textarea
                   value={input}
@@ -1932,7 +1954,7 @@ export default function App() {
                   <button
                     onClick={() => handleSend()}
                     disabled={isThinking || (!input.trim() && !pendingImage)}
-                    className="px-3.5 py-1.5 bg-[#2563EB] text-white rounded-lg text-[13px] font-medium hover:bg-[#1D4ED8] transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    className="px-4 py-1.5 bg-[#0A1628] text-white rounded-full text-[13px] font-medium hover:bg-[#1E293B] transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1.5"
                   >
                     {isThinking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                     <span>Diagnose</span>
@@ -1977,14 +1999,23 @@ function EmptyState({ onPick }) {
     "Chain slack — what's the correct adjustment?",
   ];
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
-      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#2563EB] to-[#1D4ED8] flex items-center justify-center mb-5 shadow-lg shadow-blue-500/20">
+    <div className="flex flex-col items-center justify-center min-h-[64vh] text-center">
+      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] flex items-center justify-center mb-6 shadow-lg shadow-blue-500/20">
         <Wrench className="w-7 h-7 text-white" strokeWidth={2} />
       </div>
-      <div className="font-display text-[34px] leading-[1.1] text-[#0A1628] tracking-[-0.02em] font-bold mb-2">
-        What's wrong with your bike?
+      <div className="text-[12.5px] text-[#475569] mb-4 tracking-wide" style={{ letterSpacing: "0.02em" }}>
+        Manual-grounded motorcycle diagnosis
       </div>
-      <div className="text-[14px] text-[#5B6B85] mb-8 max-w-md">
+      <div
+        className="font-serif text-[52px] md:text-[58px] leading-[1.02] text-[#0A1628] mb-3 max-w-3xl"
+        style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50, 'wght' 450", letterSpacing: "-0.025em" }}
+      >
+        What's wrong with{" "}
+        <span className="italic" style={{ fontVariationSettings: "'opsz' 144, 'SOFT' 50, 'wght' 400" }}>
+          your bike?
+        </span>
+      </div>
+      <div className="text-[15px] text-[#475569] mb-10 max-w-md leading-relaxed">
         Ask a question, speak it, or attach a photo. Every answer is grounded in your manual sections with verifiable citations.
       </div>
 
@@ -1993,7 +2024,7 @@ function EmptyState({ onPick }) {
           <button
             key={s}
             onClick={() => onPick(s)}
-            className="px-3.5 py-2 text-[12.5px] text-[#0A1628] bg-white border border-[#E2E8F0] rounded-full hover:border-[#2563EB] hover:bg-[#EFF6FF] hover:text-[#1D4ED8] transition-all"
+            className="px-4 py-2 text-[12.5px] text-[#0A1628] bg-white/80 border border-[#E5E4DF] rounded-full hover:border-[#0A1628] hover:bg-[#0A1628] hover:text-white transition-all"
           >
             {s}
           </button>
